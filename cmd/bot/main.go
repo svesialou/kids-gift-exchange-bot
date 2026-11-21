@@ -15,6 +15,7 @@ import (
 	"github.com/svesialou/kids-gift-exchange-bot/internal/bot"
 	"github.com/svesialou/kids-gift-exchange-bot/internal/config"
 	"github.com/svesialou/kids-gift-exchange-bot/internal/store"
+	"github.com/svesialou/kids-gift-exchange-bot/internal/webapp"
 )
 
 func main() {
@@ -56,5 +57,14 @@ func run() error {
 
 	b := bot.New(api, st, cfg)
 	go b.RunScheduler(ctx)
+	if cfg.WebAppURL != "" {
+		b.SetupAdminMenuButtons()
+		go func() {
+			if err := webapp.New(cfg, st, b).Run(ctx); err != nil {
+				slog.Error("admin panel stopped", "error", err)
+				stop()
+			}
+		}()
+	}
 	return b.Run(ctx)
 }

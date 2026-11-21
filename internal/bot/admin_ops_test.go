@@ -43,12 +43,18 @@ func TestDeleteExchangeMessagesAndBans(t *testing.T) {
 		}
 	}
 
+	if err := b.Texts().Set(ctx, "org.message", "Записка от оргкомитета: {text}"); err != nil {
+		t.Fatal(err)
+	}
 	n, err := b.SendMessage(ctx, []int64{ids[0], ids[2], 999999}, "Привет")
 	if err != nil || n != 2 {
 		t.Fatalf("message must reach the 2 existing users, got %d %v", n, err)
 	}
 	if !strings.Contains(tg.textsTo("100"), "Привет") || tg.textsTo("101") != "" || !strings.Contains(tg.textsTo("102"), "Привет") {
 		t.Fatal("message must go only to the selected users")
+	}
+	if !strings.Contains(tg.textsTo("100"), "Записка от оргкомитета: Привет") {
+		t.Fatalf("organizer-edited text must reach the chat: %q", tg.textsTo("100"))
 	}
 
 	if n, err := b.SetBanned(ctx, ids[:2], true, "тест"); err != nil || n != 2 {

@@ -146,7 +146,7 @@ func (b *Bot) SendMessage(ctx context.Context, userIDs []int64, text string) (in
 		return 0, err
 	}
 	for _, u := range users {
-		b.send(u.TgID, "✉️ <b>Сообщение от организаторов</b>\n\n"+esc(text), nil)
+		b.send(u.TgID, b.tx("org.message", "text", text), nil)
 	}
 	return len(users), nil
 }
@@ -179,7 +179,7 @@ func (b *Bot) DeleteExchange(ctx context.Context, id int64, notify bool) error {
 		return err
 	}
 	for _, tg := range parents {
-		b.send(tg, fmt.Sprintf("Обмен подарками «%s» отменён организаторами. Если ты уже что-то заказал(а), напиши организатору.", esc(title)), nil)
+		b.send(tg, b.tx("org.cancelled", "title", title), nil)
 	}
 	b.notifyAdmins(fmt.Sprintf("🗑 Обмен «%s» удалён.", esc(title)))
 	return nil
@@ -346,8 +346,8 @@ func (b *Bot) Reassign(ctx context.Context, childID, giverID int64) error {
 	if err != nil {
 		return err
 	}
-	b.send(old.Giver.TgID, fmt.Sprintf("Организатор передал подарок для %s другому участнику. Спасибо!", esc(old.ChildFirstName)), nil)
-	b.sendGiverCard(updated, "🎁 Организатор добавил тебе ещё одного ребёнка:")
+	b.send(old.Giver.TgID, b.tx("give.reassigned_away", "child", old.ChildFirstName), nil)
+	b.sendGiverCard(updated, b.tx("give.reassigned_new"))
 	return nil
 }
 
@@ -361,7 +361,7 @@ func (b *Bot) Broadcast(ctx context.Context, text string) (int, error) {
 		return 0, err
 	}
 	for _, id := range ids {
-		b.send(id, "📣 "+esc(text), nil)
+		b.send(id, b.tx("org.broadcast", "text", text), nil)
 	}
 	return len(ids), nil
 }
@@ -463,15 +463,14 @@ func (b *Bot) notifyDistribution(list []store.Assignment) {
 	}
 	for _, giverTg := range order {
 		items := byGiver[giverTg]
-		b.send(giverTg, fmt.Sprintf(
-			"🎄 Распределение готово! Ты даришь подарки %d %s. Ниже карточки: закажи подарок %s на указанный ПВЗ %s и нажми «Заказал(а)».",
-			len(items), childrenWord(len(items)), b.budgetText(), b.orderDeadlineText()), mainMenu())
+		b.send(giverTg, b.tx("give.distribution", "count", strconv.Itoa(len(items)), "children_word", childrenWord(len(items)),
+			"budget", b.budgetText(), "order_deadline", b.orderDeadlineText()), b.mainMenu())
 		for _, a := range items {
 			b.sendGiverCard(a, "")
 		}
 	}
 	for tg := range parents {
-		b.send(tg, "Твои дети тоже получат подарки 🎁 Когда посылка придёт в ПВЗ, я напишу, а статус можно смотреть в «"+btnReceive+"».", nil)
+		b.send(tg, b.tx("recv.distribution", "btn_receive", b.label("btn.receive")), nil)
 	}
 }
 

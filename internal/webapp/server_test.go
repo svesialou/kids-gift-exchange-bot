@@ -16,9 +16,13 @@ import (
 	"github.com/svesialou/kids-gift-exchange-bot/internal/domain"
 	"github.com/svesialou/kids-gift-exchange-bot/internal/store"
 	"github.com/svesialou/kids-gift-exchange-bot/internal/store/storetest"
+	"github.com/svesialou/kids-gift-exchange-bot/internal/texts"
 )
 
-type fakeAdmin struct{ actions []string }
+type fakeAdmin struct {
+	actions []string
+	texts   *texts.Service
+}
 
 func (f *fakeAdmin) ChangeExchangeStatus(_ context.Context, _ int64, action string) (domain.ExchangeStatus, error) {
 	f.actions = append(f.actions, action)
@@ -41,6 +45,7 @@ func (f *fakeAdmin) DeleteExchange(context.Context, int64, bool) error          
 func (f *fakeAdmin) AddViolation(context.Context, int64, int64, string) error      { return nil }
 func (f *fakeAdmin) SetViolationDismissed(context.Context, int64, bool) error      { return nil }
 func (f *fakeAdmin) UpdateSettings(context.Context, int64, bot.Settings) error     { return nil }
+func (f *fakeAdmin) Texts() *texts.Service                                         { return f.texts }
 func (f *fakeAdmin) InviteLink() string                                            { return "https://t.me/test_bot?start=x" }
 
 func testStore(t *testing.T) *store.Store { return storetest.New(t) }
@@ -69,7 +74,7 @@ func TestPanelAccessAndState(t *testing.T) {
 	}
 
 	cfg := config.Config{Location: time.UTC, TelegramToken: testToken, AdminIDs: []int64{42}, StuckAfter: 96 * time.Hour}
-	admin := &fakeAdmin{}
+	admin := &fakeAdmin{texts: texts.New(st)}
 	srv := httptest.NewServer(New(cfg, st, admin).Handler())
 	defer srv.Close()
 
@@ -164,6 +169,20 @@ func TestPanelAccessAndState(t *testing.T) {
 	code, detail := do("GET", fmt.Sprintf("/api/users/%d", anna.ID), initData(42), "")
 	if code != http.StatusOK || len(detail["violations"].([]any)) != 1 || len(detail["exchanges"].([]any)) != 1 {
 		t.Fatalf("user detail: %d %v", code, detail)
+	}
+
+	code, body = do("POST", "/api/texts/give.thanks", initData(42), `{"value":"Спасибо, {parent}!"}`)
+	if code != http.StatusConflict || !strings.Contains(body["error"].(string), "{parent}") {
+		t.Fatalf("unknown placeholder must be refused with a reason: %d %v", code, body)
+	}
+	if code, _ := do("POST", "/api/texts/give.thanks", initData(7), `{"value":"x"}`); code != http.StatusForbidden {
+		t.Fatalf("texts are admin-only: %d", code)
+	}
+	if code, body := do("POST", "/api/texts/give.thanks", initData(42), `{"value":"Спасибо за **{child}**!"}`); code != http.StatusOK {
+		t.Fatalf("valid text must save: %d %v", code, body)
+	}
+	if got := admin.texts.Render("give.thanks", "child", "Ваня"); got != "Спасибо за <b>Ваня</b>!" {
+		t.Fatalf("saved text not used: %q", got)
 	}
 
 	res, err = http.Get(srv.URL + "/")

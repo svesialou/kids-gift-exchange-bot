@@ -16,6 +16,7 @@ import (
 	"github.com/svesialou/kids-gift-exchange-bot/internal/config"
 	"github.com/svesialou/kids-gift-exchange-bot/internal/domain"
 	"github.com/svesialou/kids-gift-exchange-bot/internal/store"
+	"github.com/svesialou/kids-gift-exchange-bot/internal/texts"
 )
 
 //go:embed static
@@ -40,6 +41,7 @@ type Admin interface {
 	DeleteExchange(ctx context.Context, id int64, notify bool) error
 	AddViolation(ctx context.Context, exchangeID, userID int64, comment string) error
 	SetViolationDismissed(ctx context.Context, id int64, dismissed bool) error
+	Texts() *texts.Service
 }
 
 type Server struct {
@@ -73,6 +75,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/exchanges/{id}/delete", s.auth(s.handleDeleteExchange))
 	mux.Handle("POST /api/violations", s.auth(s.handleAddViolation))
 	mux.Handle("POST /api/violations/{id}/dismiss", s.auth(s.handleDismissViolation))
+	mux.Handle("GET /api/texts", s.auth(s.handleTexts))
+	mux.Handle("POST /api/texts/{key}", s.auth(s.handleSetText))
+	mux.Handle("POST /api/texts/{key}/reset", s.auth(s.handleResetText))
 	return securityHeaders(mux)
 }
 

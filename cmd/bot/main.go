@@ -59,6 +59,9 @@ func run() error {
 	if err := b.LoadSettings(ctx); err != nil {
 		return err
 	}
+	if err := b.Texts().Load(ctx); err != nil {
+		return err
+	}
 	go b.RunScheduler(ctx)
 	if cfg.WebAppURL != "" {
 		b.SetupAdminMenuButtons()

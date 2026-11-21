@@ -146,3 +146,4 @@ input:disabled { opacity: .55; }
 .check input { width: auto; }
 .card.active-card { box-shadow: inset 3px 0 0 var(--accent); }
 .pad { padding: 0 4px 8px; }
+textarea.text-edit { min-height: 110px; }

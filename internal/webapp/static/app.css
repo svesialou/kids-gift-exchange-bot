@@ -120,6 +120,13 @@ a { color: var(--link); text-decoration: none; }
 .toast.error { background: var(--danger); color: #fff; }
 
 .field-row.even { grid-template-columns: 1fr 1fr; }
+/* Grid items default to min-width: auto, and date inputs have a wide intrinsic size, which pushed the page sideways. */
+.field-row > * { min-width: 0; }
+input, select { min-width: 0; max-width: 100%; }
+/* datetime-local does not fit two per row on a phone. */
+@media (max-width: 520px) {
+  .field-row.even { grid-template-columns: 1fr; gap: 0; }
+}
 .kv { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; font-size: 14px; }
 .kv > span:last-child { text-align: right; }
 .danger-text { color: var(--danger); }

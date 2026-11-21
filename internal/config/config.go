@@ -19,11 +19,7 @@ type Config struct {
 
 	DB DB
 
-	Location       *time.Location
-	GiftBudgetMax  int
-	GiftCurrency   string
-	OrderDeadline  string
-	DeliveryTarget string
+	Location *time.Location
 
 	MorningHour      int
 	EveningHour      int
@@ -89,10 +85,6 @@ func Load() (Config, error) {
 			User:     str("DB_USER", "kids_gift_exchange"),
 			Password: str("DB_PASSWORD", ""),
 		},
-		GiftBudgetMax:    num("GIFT_BUDGET_MAX", 25),
-		GiftCurrency:     str("GIFT_CURRENCY", "BYN"),
-		OrderDeadline:    str("ORDER_DEADLINE", ""),
-		DeliveryTarget:   str("DELIVERY_DEADLINE", "25.12"),
 		MorningHour:      num("MORNING_HOUR", 10),
 		EveningHour:      num("EVENING_HOUR", 19),
 		QuietHour:        num("QUIET_HOUR", 22),

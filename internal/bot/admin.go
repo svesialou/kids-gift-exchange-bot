@@ -50,19 +50,21 @@ var transitions = map[string]struct {
 	"finish": {domain.ExchangeCompleted, []domain.ExchangeStatus{domain.ExchangeDistributed}},
 }
 
-// ChangeExchangeStatus applies one of the actions open, close, finish to the current exchange.
-func (b *Bot) ChangeExchangeStatus(ctx context.Context, action string) (domain.ExchangeStatus, error) {
+// ChangeExchangeStatus applies open, close or finish to an exchange. Registration opens only by hand,
+// only inside the exchange's registration window and only while no other exchange is running.
+func (b *Bot) ChangeExchangeStatus(ctx context.Context, id int64, action string) (domain.ExchangeStatus, error) {
 	t, ok := transitions[action]
 	if !ok {
 		return "", refuse("Неизвестное действие %q.", action)
 	}
-	ex, err := b.store.CurrentExchange(ctx)
+	ex, err := b.exchangeByID(ctx, id)
 	if err != nil {
 		return "", err
 	}
-	// Reopening after the scheduled close would be undone by the scheduler on its next tick.
-	if action == "open" && ex.RegistrationClosesAt != nil && !ex.RegistrationClosesAt.After(b.now()) {
-		return "", refuse("Дата закрытия регистрации уже прошла. Сначала перенесите её в условиях обмена.")
+	if action == "open" {
+		if err := b.checkCanOpen(ctx, ex); err != nil {
+			return "", err
+		}
 	}
 	ok, err = b.store.TransitionExchange(ctx, ex.ID, t.to, t.from...)
 	if err != nil {
@@ -71,12 +73,34 @@ func (b *Bot) ChangeExchangeStatus(ctx context.Context, action string) (domain.E
 	if !ok {
 		return "", refuse("Нельзя: сейчас «%s».", StatusTitle(ex.Status))
 	}
+	if err := b.LoadSettings(ctx); err != nil {
+		return t.to, err
+	}
 	if t.to == domain.ExchangeCompleted {
 		if err := b.onExchangeCompleted(ctx, ex); err != nil {
 			return t.to, err
 		}
 	}
 	return t.to, nil
+}
+
+func (b *Bot) checkCanOpen(ctx context.Context, ex store.Exchange) error {
+	now := b.now()
+	if ex.RegistrationOpensAt == nil || ex.RegistrationClosesAt == nil {
+		return refuse("Сначала укажите даты регистрации в условиях обмена.")
+	}
+	if now.Before(*ex.RegistrationOpensAt) || !now.Before(*ex.RegistrationClosesAt) {
+		return refuse("Открыть регистрацию можно только с %s по %s. Чтобы открыть сейчас, поменяйте даты в условиях.",
+			b.localDateTime(*ex.RegistrationOpensAt), b.localDateTime(*ex.RegistrationClosesAt))
+	}
+	active, err := b.store.ActiveExchange(ctx)
+	if err != nil {
+		return err
+	}
+	if active.ID != 0 && active.ID != ex.ID {
+		return refuse("Сейчас идёт «%s». Одновременно может идти только один обмен.", b.EffectiveSettings(active).Title)
+	}
+	return nil
 }
 
 const maxRecipients = 500
@@ -197,8 +221,8 @@ type DistributionPreview struct {
 	Reason   string `json:"reason,omitempty"`
 }
 
-func (b *Bot) PreviewDistribution(ctx context.Context) (DistributionPreview, error) {
-	ex, err := b.store.CurrentExchange(ctx)
+func (b *Bot) PreviewDistribution(ctx context.Context, id int64) (DistributionPreview, error) {
+	ex, err := b.exchangeByID(ctx, id)
 	if err != nil {
 		return DistributionPreview{}, err
 	}
@@ -223,15 +247,15 @@ func (b *Bot) PreviewDistribution(ctx context.Context) (DistributionPreview, err
 }
 
 // Distribute assigns givers once and sends every participant their cards.
-func (b *Bot) Distribute(ctx context.Context) (int, error) {
-	preview, err := b.PreviewDistribution(ctx)
+func (b *Bot) Distribute(ctx context.Context, id int64) (int, error) {
+	preview, err := b.PreviewDistribution(ctx, id)
 	if err != nil {
 		return 0, err
 	}
 	if !preview.Possible {
 		return 0, refuse("%s", preview.Reason)
 	}
-	ex, err := b.store.CurrentExchange(ctx)
+	ex, err := b.exchangeByID(ctx, id)
 	if err != nil {
 		return 0, err
 	}
@@ -253,7 +277,7 @@ func (b *Bot) Distribute(ctx context.Context) (int, error) {
 
 // RemindNow sends the most relevant reminder for every unfinished gift, ignoring the daily schedule.
 func (b *Bot) RemindNow(ctx context.Context) (int, error) {
-	ex, err := b.store.CurrentExchange(ctx)
+	ex, err := b.store.ActiveExchange(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -285,7 +309,7 @@ func (b *Bot) RemindNow(ctx context.Context) (int, error) {
 
 // Reassign hands a child's gift to another participant and notifies both givers.
 func (b *Bot) Reassign(ctx context.Context, childID, giverID int64) error {
-	ex, err := b.store.CurrentExchange(ctx)
+	ex, err := b.store.ActiveExchange(ctx)
 	if err != nil {
 		return err
 	}
@@ -351,21 +375,17 @@ func (b *Bot) InviteLink() string {
 
 // ---------- chat commands ----------
 
-const adminHelp = `<b>Команды организатора</b>
+const adminHelp = `<b>Организатору</b>
 
-Удобнее управлять обменом через панель: кнопка «Панель» слева от поля ввода или /admin.
+Обмены создаются, открываются, распределяются и завершаются в панели: кнопка «Панель» слева от поля ввода или ниже.
 
+Команды для активного обмена:
 /invite — ссылка-приглашение
-/open — открыть регистрацию
-/close — закрыть регистрацию
 /families — участники и телефоны
-/distribute — распределить детей (с подтверждением, один раз)
 /status — прогресс по подаркам
 /remind — разослать напоминания сейчас
 /reassign &lt;child_id&gt; &lt;user_id&gt; — передать ребёнка другому дарителю
-/broadcast &lt;текст&gt; — сообщение всем участникам
-/finish — завершить обмен
-/new_exchange — новый обмен (создаётся в панели)`
+/broadcast &lt;текст&gt; — сообщение всем участникам`
 
 func (b *Bot) handleAdminCommand(ctx context.Context, msg *tgbotapi.Message, cmd, args string) (bool, error) {
 	tgID := msg.From.ID
@@ -375,17 +395,10 @@ func (b *Bot) handleAdminCommand(ctx context.Context, msg *tgbotapi.Message, cmd
 		b.sendAdminPanelButton(tgID, adminHelp)
 	case "invite":
 		b.send(tgID, "Ссылка-приглашение:\n"+esc(b.InviteLink()), nil)
-	case "open", "close", "finish":
-		var to domain.ExchangeStatus
-		if to, err = b.ChangeExchangeStatus(ctx, cmd); err == nil {
-			b.send(tgID, "Готово: "+StatusTitle(to)+".", nil)
-		}
-	case "new_exchange":
-		b.sendAdminPanelButton(tgID, "Новый обмен создаётся в панели: там задаются название, даты и бюджет.")
+	case "open", "close", "finish", "distribute", "new_exchange":
+		b.sendAdminPanelButton(tgID, "Обмены создаются, открываются, распределяются и завершаются в панели.")
 	case "families":
 		err = b.adminFamilies(ctx, tgID)
-	case "distribute":
-		err = b.adminDistributePreview(ctx, tgID)
 	case "status":
 		err = b.adminStatus(ctx, tgID)
 	case "remind":
@@ -416,13 +429,8 @@ func (b *Bot) replyRefusal(tgID int64, err error) error {
 	return err
 }
 
-func (b *Bot) confirmDistribution(ctx context.Context, tgID int64) error {
-	_, err := b.Distribute(ctx)
-	return b.replyRefusal(tgID, err)
-}
-
 func (b *Bot) adminFamilies(ctx context.Context, tgID int64) error {
-	ex, err := b.store.CurrentExchange(ctx)
+	ex, err := b.store.ActiveExchange(ctx)
 	if err != nil {
 		return err
 	}
@@ -439,22 +447,6 @@ func (b *Bot) adminFamilies(ctx context.Context, tgID int64) error {
 	}
 	header := fmt.Sprintf("<b>Обмен #%d: %s</b>\nСемей: %d, детей: %d\n\n", ex.ID, StatusTitle(ex.Status), len(list), total)
 	b.send(tgID, header+sb.String(), nil)
-	return nil
-}
-
-func (b *Bot) adminDistributePreview(ctx context.Context, tgID int64) error {
-	p, err := b.PreviewDistribution(ctx)
-	if err != nil {
-		return err
-	}
-	if !p.Possible {
-		b.send(tgID, fmt.Sprintf("Семей: %d, детей: %d.\n❗ %s", p.Families, p.Children, esc(p.Reason)), nil)
-		return nil
-	}
-	b.send(tgID, fmt.Sprintf(
-		"Семей: %d, детей: %d.\nКаждая семья дарит столько подарков, сколько детей привела, и не дарит своим.\n\nПосле подтверждения распределение не изменить, всем участникам придут карточки.",
-		p.Families, p.Children),
-		inlineButtons(button("✅ Распределить", "dist", 0)))
 	return nil
 }
 
@@ -492,7 +484,7 @@ func childrenWord(n int) string {
 }
 
 func (b *Bot) adminStatus(ctx context.Context, tgID int64) error {
-	ex, err := b.store.CurrentExchange(ctx)
+	ex, err := b.store.ActiveExchange(ctx)
 	if err != nil {
 		return err
 	}

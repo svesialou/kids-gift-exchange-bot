@@ -152,8 +152,8 @@ func TestExchangeLifecycle(t *testing.T) {
 func TestExchangeScheduleAndHistory(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
-	if cur, err := st.CurrentExchange(ctx); err != nil || cur.ID != 0 || cur.Status != domain.ExchangeNone {
-		t.Fatalf("empty database must have no exchange: %+v %v", cur, err)
+	if cur, err := st.ActiveExchange(ctx); err != nil || cur.ID != 0 || cur.Status != domain.ExchangeNone {
+		t.Fatalf("empty database must have no active exchange: %+v %v", cur, err)
 	}
 
 	opens := time.Date(2026, 11, 25, 7, 0, 0, 0, time.UTC)
@@ -163,11 +163,16 @@ func TestExchangeScheduleAndHistory(t *testing.T) {
 
 	firstID, err := st.CreateExchange(ctx, sch)
 	if err != nil {
-		t.Fatalf("the first exchange must be creatable: %v", err)
+		t.Fatal(err)
 	}
-	if _, err := st.CreateExchange(ctx, sch); err == nil {
-		t.Fatal("a new exchange must not start while the current one is not completed")
+	secondID, err := st.CreateExchange(ctx, sch)
+	if err != nil {
+		t.Fatalf("several exchanges can be planned: %v", err)
 	}
+	if cur, _ := st.ActiveExchange(ctx); cur.ID != 0 {
+		t.Fatalf("planned exchanges are not active, got %d", cur.ID)
+	}
+
 	sch.Title, sch.BudgetMax = "Новый год 2026", 35
 	if err := st.SaveExchangeSchedule(ctx, firstID, sch); err != nil {
 		t.Fatal(err)
@@ -177,16 +182,12 @@ func TestExchangeScheduleAndHistory(t *testing.T) {
 		t.Fatalf("schedule not read back: %+v %v", got, err)
 	}
 
-	ok, err := st.TransitionExchange(ctx, firstID, domain.ExchangeCompleted, domain.ExchangeDraft)
-	mustTrue(t, ok, err, "complete first exchange")
-	secondID, err := st.CreateExchange(ctx, sch)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cur, _ := st.CurrentExchange(ctx)
+	ok, err := st.TransitionExchange(ctx, firstID, domain.ExchangeOpen, domain.ExchangeDraft)
+	mustTrue(t, ok, err, "open first exchange")
+	cur, _ := st.ActiveExchange(ctx)
 	list, err := st.ListExchanges(ctx)
-	if err != nil || cur.ID != secondID || len(list) != 2 || list[0].ID != secondID {
-		t.Fatalf("history: current %d, list %+v, %v", cur.ID, list, err)
+	if err != nil || cur.ID != firstID || len(list) != 2 || list[0].ID != secondID {
+		t.Fatalf("active %d, list %+v, %v", cur.ID, list, err)
 	}
 }
 
@@ -297,7 +298,7 @@ func TestDeleteDistributedExchange(t *testing.T) {
 	if v, _ := st.ViolationsByExchange(ctx, ex.ID); len(v) != 0 {
 		t.Fatalf("violations left: %d", len(v))
 	}
-	if cur, _ := st.CurrentExchange(ctx); cur.ID != 0 {
+	if cur, _ := st.ActiveExchange(ctx); cur.ID != 0 {
 		t.Fatalf("no exchange must remain, got %d", cur.ID)
 	}
 }

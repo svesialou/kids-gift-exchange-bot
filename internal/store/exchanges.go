@@ -69,15 +69,18 @@ func scanExchange(row interface{ Scan(...any) error }, extra ...any) (Exchange, 
 	return e, nil
 }
 
-// CurrentExchange returns the latest exchange. With no exchanges it returns the zero Exchange
-// (ID 0, status ExchangeNone): lookups by ID 0 find nothing and no status check passes.
-func (s *Store) CurrentExchange(ctx context.Context) (Exchange, error) {
-	e, err := scanExchange(s.db.QueryRowContext(ctx, `SELECT `+exchangeColumns+` FROM exchanges e ORDER BY e.id DESC LIMIT 1`))
+// ActiveExchange returns the exchange that is running now: registration open, closed or gifts distributed.
+// Organizers can run only one at a time. With none it returns the zero Exchange (ID 0, status ExchangeNone):
+// lookups by ID 0 find nothing and no status check passes.
+func (s *Store) ActiveExchange(ctx context.Context) (Exchange, error) {
+	e, err := scanExchange(s.db.QueryRowContext(ctx, `SELECT `+exchangeColumns+` FROM exchanges e
+		WHERE e.status IN (?, ?, ?) ORDER BY e.id DESC LIMIT 1`,
+		domain.ExchangeOpen, domain.ExchangeClosed, domain.ExchangeDistributed))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Exchange{Status: domain.ExchangeNone}, nil
 	}
 	if err != nil {
-		return Exchange{}, fmt.Errorf("current exchange: %w", err)
+		return Exchange{}, fmt.Errorf("active exchange: %w", err)
 	}
 	return e, nil
 }
@@ -102,6 +105,7 @@ type ExchangeSummary struct {
 	Violations int
 }
 
+// ListExchanges returns all exchanges, newest first.
 func (s *Store) ListExchanges(ctx context.Context) ([]ExchangeSummary, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT `+exchangeColumns+`,
@@ -128,23 +132,9 @@ func (s *Store) ListExchanges(ctx context.Context) ([]ExchangeSummary, error) {
 	return out, rows.Err()
 }
 
-// CreateExchange starts a new draft exchange; only allowed when the latest one is completed.
+// CreateExchange adds a planned (draft) exchange; organizers open its registration by hand later.
 func (s *Store) CreateExchange(ctx context.Context, sch ExchangeSchedule) (int64, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	var status domain.ExchangeStatus
-	err = tx.QueryRowContext(ctx, `SELECT status FROM exchanges ORDER BY id DESC LIMIT 1 FOR UPDATE`).Scan(&status)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return 0, fmt.Errorf("lock latest exchange: %w", err)
-	}
-	if err == nil && status != domain.ExchangeCompleted {
-		return 0, fmt.Errorf("latest exchange is %s, want %s", status, domain.ExchangeCompleted)
-	}
-	res, err := tx.ExecContext(ctx, `
+	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO exchanges (status, title, gift_budget_max, gift_currency, registration_opens_at, registration_closes_at, order_deadline, delivery_deadline)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		domain.ExchangeDraft, sch.Title, sch.BudgetMax, sch.Currency, utcPtr(sch.RegistrationOpensAt), utcPtr(sch.RegistrationClosesAt),
@@ -152,8 +142,7 @@ func (s *Store) CreateExchange(ctx context.Context, sch ExchangeSchedule) (int64
 	if err != nil {
 		return 0, fmt.Errorf("insert exchange: %w", err)
 	}
-	id, _ := res.LastInsertId()
-	return id, tx.Commit()
+	return res.LastInsertId()
 }
 
 func (s *Store) SaveExchangeSchedule(ctx context.Context, id int64, sch ExchangeSchedule) error {

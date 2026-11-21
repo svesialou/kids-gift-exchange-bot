@@ -204,13 +204,6 @@ func (b *Bot) handleCallback(ctx context.Context, cq *tgbotapi.CallbackQuery) er
 	id, _ := strconv.ParseInt(rawID, 10, 64)
 	tgID := cq.From.ID
 
-	if action == "dist" {
-		if !b.cfg.IsAdmin(tgID) {
-			return nil
-		}
-		return b.confirmDistribution(ctx, tgID)
-	}
-
 	user, err := b.store.UserByTG(ctx, tgID)
 	if errors.Is(err, store.ErrNotFound) {
 		b.send(tgID, "Сначала нужно зарегистрироваться: нажми /start.", nil)

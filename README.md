@@ -30,21 +30,21 @@ The scheduler checks assignments every `SCHEDULER_INTERVAL`. Every kind of remin
 
 ## Exchanges and schedule
 
-Every round is a separate exchange with a title, a gift budget and four dates:
+Organizers create every exchange by hand in the panel and fill all of its fields: title, gift budget and currency, registration start and end (date and time), the date gifts must be sent by, and the end date. Nothing is created automatically and there are no default values.
 
-- registration opens (date and time);
-- registration closes (date and time) — right after that the bot distributes the children and sends the cards;
-- gifts must be sent by (date) — after the end of this day givers who have not marked «Заказал(а)» get an `order_overdue` violation;
-- end of the exchange (date) — after the end of this day the exchange completes, reminders stop, and gifts that never reached the pickup point get a `delivery_overdue` violation.
+- Several exchanges can be planned; only one runs at a time (registration open, closed, or gifts distributed).
+- Registration opens only when an organizer presses the button, and only between the exchange's registration start and end, while no other exchange is running.
+- At the registration end the bot closes it and distributes the children right away.
+- After the end of the send-by day givers who have not marked «Заказал(а)» get an `order_overdue` violation.
+- After the end date the exchange completes, reminders stop, and gifts that never reached the pickup point get a `delivery_overdue` violation.
 
-The scheduler moves the current exchange along these dates and notifies admins at every step. Empty registration dates mean organizers open and close registration by hand. Only one exchange runs at a time: the next one can be created once the current one is completed or deleted. Any exchange can be deleted from the panel together with its children, distribution and violations; for a running one organizers can notify its participants. With no exchanges the bot tells newcomers that registration is closed and the panel shows the form for the first exchange. Adult profiles carry over between exchanges; children are registered per exchange.
+Any exchange can be deleted together with its children, distribution and violations; for a running one organizers can notify its participants. Adult profiles carry over between exchanges; children are registered per exchange. While no exchange runs, the bot tells newcomers that registration is closed.
 
 ## Admin panel
 
 Organizers manage everything from a Telegram Mini App: the «Панель» menu button in their chat with the bot, or `/admin`.
 
-- «Обмен»: the current exchange. Overview with the stage, actions, invite, conditions and schedule form (or the form for the next exchange), message to everyone; «Семьи»; «Подарки» with filters and reassigning; «Нарушения» with automatic and manual entries that can be dismissed.
-- «История»: every past exchange opens the same views read-only, including who gave to whom and the violations.
+- «Обмены»: the running exchange, planned ones and completed ones, plus «Создать обмен». Each exchange opens with its overview (stage, actions, invite, schedule and conditions, delete), «Семьи», «Подарки» with filters and reassigning, «Нарушения» with automatic and manual entries that can be dismissed.
 - «Люди»: the user base across all exchanges with participation counts, gifts given and active violations. A user with violations or a ban gets a red flag. The user card shows the whole history, sends a personal message from the bot, and bans or unbans: a banned user cannot add children and is left out of distributions. In selection mode organizers tick several people to message, ban or unban them at once.
 
 The bot serves the panel and its API on `HTTP_ADDR` when `WEBAPP_URL` is set. Every API call carries Telegram `initData`; the server checks its HMAC signature with the bot token, rejects data older than 24 hours and lets through only ids from `ADMIN_IDS`. Panel actions go through the same code as the chat commands, so participants get the same Telegram notifications.
@@ -57,7 +57,7 @@ Commands are hidden from the menu and work only for ids from `ADMIN_IDS`. `/admi
 
 All settings come from environment variables, see `.env.example`. Required: `TELEGRAM_BOT_TOKEN`, `DB_PASSWORD`. Reminder hours can be changed with a restart.
 
-Title, budget, currency and dates are set per exchange in the panel. `GIFT_BUDGET_MAX`, `GIFT_CURRENCY`, `ORDER_DEADLINE` and `DELIVERY_DEADLINE` are only defaults for an exchange where nothing was saved, and the budget suggested for a new one. Migrations run automatically on start.
+Title, budget, currency and dates are set per exchange in the panel. Migrations run automatically on start.
 
 ## Development
 

@@ -85,7 +85,7 @@ type exchangeJSON struct {
 	ID            int64        `json:"id"`
 	Status        string       `json:"status"`
 	StatusTitle   string       `json:"status_title"`
-	Current       bool         `json:"current"`
+	Active        bool         `json:"active"`
 	CreatedAt     time.Time    `json:"created_at"`
 	DistributedAt *time.Time   `json:"distributed_at,omitempty"`
 	CompletedAt   *time.Time   `json:"completed_at,omitempty"`
@@ -107,10 +107,12 @@ type exchangeDetailJSON struct {
 	Assignments []assignmentJSON `json:"assignments"`
 	Violations  []violationJSON  `json:"violations"`
 
-	// Only for the current exchange.
-	Invite     string                   `json:"invite,omitempty"`
-	Preview    *bot.DistributionPreview `json:"preview,omitempty"`
-	Unfinished []personJSON             `json:"without_children,omitempty"`
+	Invite     string                  `json:"invite"`
+	Preview    bot.DistributionPreview `json:"preview"`
+	Unfinished []personJSON            `json:"without_children"`
+	// CanOpen tells whether registration may be opened now; OpenHint explains why not.
+	CanOpen  bool   `json:"can_open"`
+	OpenHint string `json:"open_hint,omitempty"`
 }
 
 func person(u store.User) personJSON {
@@ -164,9 +166,10 @@ func (s *Server) settingsFromJSON(in settingsJSON) (bot.Settings, error) {
 	return out, err
 }
 
-func (s *Server) exchangeToJSON(ex store.Exchange, current bool) exchangeJSON {
+func (s *Server) exchangeToJSON(ex store.Exchange) exchangeJSON {
 	return exchangeJSON{
-		ID: ex.ID, Status: string(ex.Status), StatusTitle: bot.StatusTitle(ex.Status), Current: current,
+		ID: ex.ID, Status: string(ex.Status), StatusTitle: bot.StatusTitle(ex.Status),
+		Active:    ex.Status == domain.ExchangeOpen || ex.Status == domain.ExchangeClosed || ex.Status == domain.ExchangeDistributed,
 		CreatedAt: ex.CreatedAt, DistributedAt: ex.DistributedAt, CompletedAt: ex.CompletedAt,
 		Settings: s.settingsToJSON(s.admin.EffectiveSettings(ex)),
 	}
@@ -207,15 +210,6 @@ func (s *Server) assignmentToJSON(a store.Assignment, now time.Time) assignmentJ
 
 // ---------- handlers ----------
 
-func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
-	ex, err := s.store.CurrentExchange(r.Context())
-	if err != nil {
-		s.fail(w, "state", err)
-		return
-	}
-	s.writeExchange(w, r.Context(), ex, true)
-}
-
 func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
 	if !ok {
@@ -231,16 +225,7 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "exchange", err)
 		return
 	}
-	cur, err := s.store.CurrentExchange(ctx)
-	if err != nil {
-		s.fail(w, "exchange", err)
-		return
-	}
-	s.writeExchange(w, ctx, ex, cur.ID == ex.ID)
-}
-
-func (s *Server) writeExchange(w http.ResponseWriter, ctx context.Context, ex store.Exchange, current bool) {
-	out, err := s.buildExchange(ctx, ex, current)
+	out, err := s.buildExchange(ctx, ex)
 	if err != nil {
 		s.fail(w, "exchange", err)
 		return
@@ -248,8 +233,9 @@ func (s *Server) writeExchange(w http.ResponseWriter, ctx context.Context, ex st
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (s *Server) buildExchange(ctx context.Context, ex store.Exchange, current bool) (exchangeDetailJSON, error) {
-	out := exchangeDetailJSON{Exchange: s.exchangeToJSON(ex, current)}
+func (s *Server) buildExchange(ctx context.Context, ex store.Exchange) (exchangeDetailJSON, error) {
+	out := exchangeDetailJSON{Exchange: s.exchangeToJSON(ex)}
+	open := ex.Status == domain.ExchangeOpen
 
 	users, err := s.store.Users(ctx)
 	if err != nil {
@@ -294,7 +280,7 @@ func (s *Server) buildExchange(ctx context.Context, ex store.Exchange, current b
 				children = []childJSON{}
 			}
 			out.Families = append(out.Families, familyJSON{personJSON: person(u), Children: children, Gives: gives[u.ID], Violations: violationsOf[u.ID]})
-		} else if current {
+		} else if open {
 			unfinished = append(unfinished, person(u))
 		}
 	}
@@ -305,17 +291,16 @@ func (s *Server) buildExchange(ctx context.Context, ex store.Exchange, current b
 		out.Assignments = append(out.Assignments, s.assignmentToJSON(a, now))
 	}
 
-	if current {
-		out.Invite = s.admin.InviteLink()
-		preview, err := s.admin.PreviewDistribution(ctx)
-		if err != nil {
-			return out, err
-		}
-		out.Preview = &preview
-		out.Unfinished = unfinished
-		if out.Unfinished == nil {
-			out.Unfinished = []personJSON{}
-		}
+	out.Invite = s.admin.InviteLink()
+	if out.Preview, err = s.admin.PreviewDistribution(ctx, ex.ID); err != nil {
+		return out, err
+	}
+	out.Unfinished = unfinished
+	if out.Unfinished == nil {
+		out.Unfinished = []personJSON{}
+	}
+	if ex.Status == domain.ExchangeDraft || ex.Status == domain.ExchangeClosed {
+		out.CanOpen, out.OpenHint = s.canOpen(ctx, ex)
 	}
 	return out, nil
 }
@@ -327,9 +312,9 @@ func (s *Server) handleExchanges(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := make([]exchangeSummaryJSON, 0, len(list))
-	for i, x := range list {
+	for _, x := range list {
 		out = append(out, exchangeSummaryJSON{
-			exchangeJSON: s.exchangeToJSON(x.Exchange, i == 0),
+			exchangeJSON: s.exchangeToJSON(x.Exchange),
 			Families:     x.Families, Children: x.Children, Gifts: x.Gifts, Received: x.Received, Violations: x.Violations,
 		})
 	}
@@ -337,11 +322,15 @@ func (s *Server) handleExchanges(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
 	settings, ok := s.readSettings(w, r)
 	if !ok {
 		return
 	}
-	err := s.admin.UpdateSettings(r.Context(), settings)
+	err := s.admin.UpdateSettings(r.Context(), id, settings)
 	s.reply(w, "Сохранено. Новые сообщения бота будут с этими условиями, уже отправленные не изменятся.", err)
 }
 
@@ -350,8 +339,12 @@ func (s *Server) handleCreateExchange(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	err := s.admin.NewExchange(r.Context(), settings)
-	s.reply(w, "Новый обмен создан.", err)
+	id, err := s.admin.NewExchange(r.Context(), settings)
+	if err != nil {
+		s.reply(w, "", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"message": "Обмен создан. Регистрацию можно открыть в его даты.", "id": id})
 }
 
 func (s *Server) readSettings(w http.ResponseWriter, r *http.Request) (bot.Settings, bool) {
@@ -384,4 +377,23 @@ func (s *Server) handleDeleteExchange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.reply(w, "Обмен удалён.", s.admin.DeleteExchange(r.Context(), id, req.Notify))
+}
+
+// canOpen mirrors the bot's checks so the panel can grey out the button with a reason.
+func (s *Server) canOpen(ctx context.Context, ex store.Exchange) (bool, string) {
+	if ex.RegistrationOpensAt == nil || ex.RegistrationClosesAt == nil {
+		return false, "Укажите даты регистрации в условиях."
+	}
+	now := s.now()
+	if now.Before(*ex.RegistrationOpensAt) {
+		return false, "Регистрацию можно открыть с " + ex.RegistrationOpensAt.In(s.cfg.Location).Format("02.01 15:04") + "."
+	}
+	if !now.Before(*ex.RegistrationClosesAt) {
+		return false, "Время регистрации прошло. Чтобы открыть, перенесите её конец в условиях."
+	}
+	active, err := s.store.ActiveExchange(ctx)
+	if err == nil && active.ID != 0 && active.ID != ex.ID {
+		return false, "Сейчас идёт «" + s.admin.EffectiveSettings(active).Title + "». Одновременно может идти только один обмен."
+	}
+	return true, ""
 }

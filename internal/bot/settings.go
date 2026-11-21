@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -11,34 +12,20 @@ import (
 	"github.com/svesialou/kids-gift-exchange-bot/internal/store"
 )
 
-// Settings are the schedule and conditions of an exchange. Values never saved for an exchange
-// fall back to the env defaults; nil registration dates mean organizers open and close it by hand.
+// Settings are the schedule and conditions of an exchange. Organizers fill every field when creating it.
 type Settings struct {
 	Title                string
 	BudgetMax            int
 	Currency             string
 	RegistrationOpensAt  *time.Time
 	RegistrationClosesAt *time.Time
-	OrderDeadline        time.Time // zero: not set
-	DeliveryBy           time.Time // zero: not set
+	OrderDeadline        time.Time
+	DeliveryBy           time.Time
 }
 
-func (b *Bot) defaultSettings() Settings {
-	now := b.now().In(b.cfg.Location)
-	s := Settings{BudgetMax: b.cfg.GiftBudgetMax, Currency: b.cfg.GiftCurrency}
-	if d, ok := parseDayMonth(b.cfg.OrderDeadline, now); ok {
-		s.OrderDeadline = d
-	}
-	if d, ok := parseDayMonth(b.cfg.DeliveryTarget, now); ok {
-		s.DeliveryBy = d
-	}
-	return s
-}
-
-// EffectiveSettings merges what was saved for the exchange with the env defaults.
+// EffectiveSettings reads the settings saved for an exchange; missing values stay zero.
 func (b *Bot) EffectiveSettings(ex store.Exchange) Settings {
-	s := b.defaultSettings()
-	s.Title = ex.Title
+	s := Settings{Title: ex.Title, RegistrationOpensAt: ex.RegistrationOpensAt, RegistrationClosesAt: ex.RegistrationClosesAt}
 	if s.Title == "" && ex.ID != 0 {
 		s.Title = fmt.Sprintf("Обмен #%d", ex.ID)
 	}
@@ -54,14 +41,13 @@ func (b *Bot) EffectiveSettings(ex store.Exchange) Settings {
 	if ex.DeliveryDeadline != nil {
 		s.DeliveryBy = *ex.DeliveryDeadline
 	}
-	s.RegistrationOpensAt = ex.RegistrationOpensAt
-	s.RegistrationClosesAt = ex.RegistrationClosesAt
 	return s
 }
 
-// LoadSettings refreshes the cached settings of the current exchange. The bot is the only writer, so the cache stays in sync.
+// LoadSettings refreshes the cached settings of the active exchange used in chat texts.
+// The bot is the only writer, so the cache stays in sync.
 func (b *Bot) LoadSettings(ctx context.Context) error {
-	ex, err := b.store.CurrentExchange(ctx)
+	ex, err := b.store.ActiveExchange(ctx)
 	if err != nil {
 		return err
 	}
@@ -74,55 +60,60 @@ func (b *Bot) Settings() Settings {
 	if s := b.settings.Load(); s != nil {
 		return *s
 	}
-	return b.defaultSettings()
+	return Settings{}
 }
 
 func (b *Bot) validateSettings(s *Settings) error {
 	s.Title = strings.TrimSpace(s.Title)
 	s.Currency = strings.TrimSpace(s.Currency)
 	switch {
-	case utf8.RuneCountInString(s.Title) > 100:
-		return refuse("Название: не больше 100 символов.")
+	case s.Title == "" || utf8.RuneCountInString(s.Title) > 100:
+		return refuse("Название: от 1 до 100 символов.")
 	case s.BudgetMax < 1 || s.BudgetMax > 100000:
 		return refuse("Бюджет должен быть от 1 до 100000.")
 	case s.Currency == "" || utf8.RuneCountInString(s.Currency) > 10:
 		return refuse("Валюта: от 1 до 10 символов, например BYN.")
+	case s.RegistrationOpensAt == nil || s.RegistrationClosesAt == nil:
+		return refuse("Укажите начало и конец регистрации.")
 	case s.OrderDeadline.IsZero() || s.DeliveryBy.IsZero():
 		return refuse("Укажите срок отправки подарков и дату завершения.")
+	case !s.RegistrationOpensAt.Before(*s.RegistrationClosesAt):
+		return refuse("Регистрация должна закрываться позже, чем открывается.")
+	case !s.RegistrationClosesAt.Before(b.endOfDate(s.OrderDeadline)):
+		return refuse("Регистрация должна закрыться раньше срока отправки подарков.")
 	case s.OrderDeadline.After(s.DeliveryBy):
 		return refuse("Срок отправки подарков должен быть не позже даты завершения.")
-	case (s.RegistrationOpensAt == nil) != (s.RegistrationClosesAt == nil):
-		return refuse("Укажите и начало, и конец регистрации, или оставьте оба поля пустыми.")
-	}
-	if s.RegistrationOpensAt != nil {
-		if !s.RegistrationOpensAt.Before(*s.RegistrationClosesAt) {
-			return refuse("Регистрация должна закрываться позже, чем открывается.")
-		}
-		if !s.RegistrationClosesAt.Before(b.endOfDate(s.OrderDeadline)) {
-			return refuse("Регистрация должна закрыться раньше срока отправки подарков.")
-		}
 	}
 	return nil
 }
 
-// UpdateSettings changes the current exchange. Registration dates are frozen once registration has closed.
-func (b *Bot) UpdateSettings(ctx context.Context, s Settings) error {
+// NewExchange adds a planned exchange. Several can be planned; only one runs at a time.
+func (b *Bot) NewExchange(ctx context.Context, s Settings) (int64, error) {
+	if err := b.validateSettings(&s); err != nil {
+		return 0, err
+	}
+	if !s.RegistrationClosesAt.After(b.now()) {
+		return 0, refuse("Конец регистрации уже прошёл, укажите дату в будущем.")
+	}
+	return b.store.CreateExchange(ctx, toSchedule(s))
+}
+
+// UpdateSettings changes an exchange. Registration dates are frozen once registration has closed.
+func (b *Bot) UpdateSettings(ctx context.Context, id int64, s Settings) error {
 	if err := b.validateSettings(&s); err != nil {
 		return err
 	}
-	ex, err := b.store.CurrentExchange(ctx)
+	ex, err := b.exchangeByID(ctx, id)
 	if err != nil {
 		return err
 	}
 	switch ex.Status {
-	case domain.ExchangeNone:
-		return refuse("Обмена ещё нет, сначала создайте его.")
 	case domain.ExchangeCompleted:
 		return refuse("Обмен завершён, его условия больше не меняются.")
 	case domain.ExchangeClosed, domain.ExchangeDistributed:
 		s.RegistrationOpensAt, s.RegistrationClosesAt = ex.RegistrationOpensAt, ex.RegistrationClosesAt
 	case domain.ExchangeOpen:
-		if s.RegistrationClosesAt != nil && !s.RegistrationClosesAt.After(b.now()) {
+		if !s.RegistrationClosesAt.After(b.now()) {
 			return refuse("Регистрация уже идёт: дата закрытия должна быть в будущем.")
 		}
 	}
@@ -132,22 +123,12 @@ func (b *Bot) UpdateSettings(ctx context.Context, s Settings) error {
 	return b.LoadSettings(ctx)
 }
 
-// NewExchange creates the next exchange with its schedule; the previous one must be completed.
-func (b *Bot) NewExchange(ctx context.Context, s Settings) error {
-	if err := b.validateSettings(&s); err != nil {
-		return err
+func (b *Bot) exchangeByID(ctx context.Context, id int64) (store.Exchange, error) {
+	ex, err := b.store.ExchangeByID(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return ex, refuse("Обмен не найден.")
 	}
-	ex, err := b.store.CurrentExchange(ctx)
-	if err != nil {
-		return err
-	}
-	if ex.Status != domain.ExchangeCompleted && ex.Status != domain.ExchangeNone {
-		return refuse("Новый обмен можно создать только после завершения или удаления текущего.")
-	}
-	if _, err := b.store.CreateExchange(ctx, toSchedule(s)); err != nil {
-		return err
-	}
-	return b.LoadSettings(ctx)
+	return ex, err
 }
 
 func toSchedule(s Settings) store.ExchangeSchedule {

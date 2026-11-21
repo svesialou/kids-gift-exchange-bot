@@ -144,3 +144,5 @@ input:disabled { opacity: .55; }
 .checkmark { font-size: 18px; }
 .check { display: flex; align-items: center; gap: 8px; font-size: 14px; }
 .check input { width: auto; }
+.card.active-card { box-shadow: inset 3px 0 0 var(--accent); }
+.pad { padding: 0 4px 8px; }

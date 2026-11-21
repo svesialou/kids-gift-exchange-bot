@@ -32,9 +32,9 @@ const EXCHANGE_SECTIONS = [["overview", "Обзор"], ["families", "Семьи"
 const PEOPLE_FILTERS = [["all", "Все"], ["flag", "🚩 С нарушениями"], ["banned", "Заблокированы"]];
 
 // view describes what is on screen; back returns to the screen it was opened from.
-let view = { section: "exchange", exchangeId: null, sub: "overview", userId: null, back: null };
+let view = { section: "exchanges", exchangeId: null, sub: "overview", userId: null, back: null };
 const ui = { giftFilter: "all", query: "", peopleFilter: "all", selecting: false, selected: new Set() };
-const data = { exchange: null, history: null, people: null, user: null };
+const data = { exchange: null, exchanges: null, people: null, user: null };
 
 // ---------- helpers ----------
 
@@ -109,7 +109,7 @@ async function run(path, body, confirmText, button) {
 }
 
 function action(name, confirmText) {
-  return (ev) => run("/api/action", { action: name }, confirmText, ev.currentTarget);
+  return (ev) => run(`/api/exchanges/${data.exchange.exchange.id}/action`, { action: name }, confirmText, ev.currentTarget);
 }
 
 function ageText(age) {
@@ -187,9 +187,14 @@ function setSection(section) {
 }
 
 function openExchange(id) {
-  view = { section: "exchange", exchangeId: id, sub: "overview", userId: null, back: { ...view } };
+  view = { section: "exchange", exchangeId: id, sub: "overview", userId: null, back: view.section === "create" ? view.back : { ...view } };
   ui.query = "";
   load();
+}
+
+function openCreate() {
+  view = { section: "create", exchangeId: null, sub: null, userId: null, back: { ...view } };
+  render();
 }
 
 function openUser(id) {
@@ -198,21 +203,16 @@ function openUser(id) {
 }
 
 function goBack() {
-  view = view.back || { section: "exchange", exchangeId: null, sub: "overview", userId: null, back: null };
+  view = view.back || { section: "exchanges", exchangeId: null, sub: "overview", userId: null, back: null };
   load();
 }
 
 async function load() {
   try {
-    if (view.section === "exchange") {
-      data.exchange = await api(view.exchangeId ? "/api/exchanges/" + view.exchangeId : "/api/state");
-    } else if (view.section === "history") {
-      data.history = await api("/api/exchanges");
-    } else if (view.section === "people") {
-      data.people = await api("/api/users");
-    } else if (view.section === "user") {
-      data.user = await api("/api/users/" + view.userId);
-    }
+    if (view.section === "exchanges") data.exchanges = await api("/api/exchanges");
+    else if (view.section === "exchange") data.exchange = await api("/api/exchanges/" + view.exchangeId);
+    else if (view.section === "people") data.people = await api("/api/users");
+    else if (view.section === "user") data.user = await api("/api/users/" + view.userId);
     render();
   } catch (e) {
     document.getElementById("subtitle").textContent = "";
@@ -224,19 +224,19 @@ function render() {
   const title = document.getElementById("title");
   const subtitle = document.getElementById("subtitle");
   let nodes = [];
-  if (view.section === "exchange" && data.exchange.exchange.id === 0) {
-    title.textContent = "Обменов пока нет";
-    subtitle.textContent = "Создайте первый обмен";
+  if (view.section === "exchanges") {
+    title.textContent = "Обмены";
+    subtitle.textContent = data.exchanges.length ? "Всего: " + data.exchanges.length : "Пока ни одного";
+    nodes = renderHome();
+  } else if (view.section === "create") {
+    title.textContent = "Новый обмен";
+    subtitle.textContent = "Все поля обязательны";
     nodes = [settingsForm(null)];
   } else if (view.section === "exchange") {
     const ex = data.exchange.exchange;
     title.textContent = ex.settings.title;
-    subtitle.textContent = ex.status_title + (ex.current ? "" : " · архив");
+    subtitle.textContent = ex.status_title;
     nodes = renderExchange();
-  } else if (view.section === "history") {
-    title.textContent = "История обменов";
-    subtitle.textContent = "Всего: " + data.history.length;
-    nodes = renderHistory();
   } else if (view.section === "people") {
     title.textContent = "Люди";
     subtitle.textContent = "Зарегистрировано: " + data.people.length;
@@ -248,6 +248,49 @@ function render() {
   }
   if (view.back) nodes.unshift(h("button", { class: "back", type: "button", onclick: goBack }, "← Назад"));
   document.getElementById("view").replaceChildren(...nodes);
+}
+
+// ---------- exchanges home ----------
+
+function renderHome() {
+  const all = data.exchanges;
+  const active = all.filter((x) => x.active);
+  const planned = all.filter((x) => x.status === "draft")
+    .sort((a, b) => (a.settings.registration_opens_at || "").localeCompare(b.settings.registration_opens_at || ""));
+  const done = all.filter((x) => x.status === "completed");
+
+  const out = [h("button", { class: "btn", type: "button", onclick: openCreate }, "＋ Создать обмен")];
+  if (!all.length) {
+    out.push(empty("Обменов пока нет. Создайте первый: укажите название, бюджет и даты."));
+    return out;
+  }
+  const section = (label, list, emptyText) => {
+    out.push(h("h4", { class: "section-title" }, label));
+    if (!list.length) out.push(h("div", { class: "muted pad" }, emptyText));
+    out.push(...list.map(exchangeRow));
+  };
+  section("Активный", active, "Сейчас ни один обмен не идёт.");
+  section("Запланированные", planned, "Нет запланированных обменов.");
+  if (done.length) section("Завершённые", done, "");
+  return out;
+}
+
+function exchangeRow(x) {
+  const s = x.settings;
+  return h("div", { class: "card clickable" + (x.active ? " active-card" : ""), onclick: () => openExchange(x.id) },
+    h("div", { class: "row" },
+      h("h3", null, s.title),
+      h("span", { class: "spacer" }),
+      h("span", { class: "badge" + (x.active ? " ordered" : "") }, x.status_title),
+    ),
+    h("div", { class: "muted" }, `Регистрация ${fmtLocal(s.registration_opens_at)} – ${fmtLocal(s.registration_closes_at)}`),
+    h("div", { class: "muted" }, `Отправить до ${fmtDate(s.order_deadline)} · завершение ${fmtDate(s.delivery_by)} · до ${s.budget_max} ${s.currency}`),
+    x.families || x.gifts || x.violations ? h("div", { class: "row line" },
+      h("span", null, `${x.families} семей · ${x.children} детей`),
+      x.gifts ? h("span", { class: "muted" }, `получено ${x.received}/${x.gifts}`) : null,
+      x.violations ? h("span", { class: "badge flag" }, "🚩 " + x.violations) : null,
+    ) : null,
+  );
 }
 
 // ---------- exchange ----------
@@ -278,50 +321,46 @@ function renderOverview() {
     h("div", { class: "steps" }, STEPS.map((_, i) => h("div", { class: "step" + (i <= idx ? " done" : "") }))),
     h("div", { class: "step-labels" }, STEPS.map(([, label]) => h("span", null, label))),
     scheduleLines(ex.settings),
-  )];
+  ), stageCard(d)];
 
-  if (ex.current) out.push(stageCard(d));
-  out.push(card(
-    h("div", { class: "stats" },
-      statBox(d.families.length, "семей"), statBox(kids, "детей"),
-      statBox(d.assignments.filter((a) => a.status === "received").length + " / " + d.assignments.length, "подарков получено"),
-      statBox(d.violations.filter((v) => !v.dismissed).length, "нарушений"),
-    ),
-    d.without_children && d.without_children.length
-      ? h("div", { class: "muted line" }, "Зарегистрировались без детей: " + d.without_children.length)
-      : null,
-  ));
-
-  if (ex.current) {
-    if (ex.status === "registration_open") out.push(inviteCard());
-    out.push(settingsForm(ex.status === "completed" ? null : ex));
-    out.push(broadcastCard());
+  if (ex.status !== "draft") {
+    out.push(card(
+      h("div", { class: "stats" },
+        statBox(d.families.length, "семей"), statBox(kids, "детей"),
+        statBox(d.assignments.filter((a) => a.status === "received").length + " / " + d.assignments.length, "подарков получено"),
+        statBox(d.violations.filter((v) => !v.dismissed).length, "нарушений"),
+      ),
+      d.without_children.length ? h("div", { class: "muted line" }, "Зарегистрировались без детей: " + d.without_children.length) : null,
+    ));
   }
+  if (ex.status === "registration_open") out.push(inviteCard());
+  if (ex.status !== "completed") out.push(settingsForm(ex));
+  if (ex.active) out.push(broadcastCard());
   out.push(deleteCard(d));
   return out.filter(Boolean);
 }
 
 function deleteCard(d) {
   const ex = d.exchange;
-  const running = ["registration_open", "registration_closed", "distributed"].includes(ex.status);
-  const notify = h("input", { type: "checkbox", checked: running });
+  const notify = h("input", { type: "checkbox", checked: ex.active });
   const kids = d.families.reduce((n, f) => n + f.children.length, 0);
   return card(
     h("h3", null, "Удалить обмен"),
     h("div", { class: "muted" }, "Удалятся все дети, распределение и нарушения этого обмена. Профили взрослых останутся."),
-    running ? h("label", { class: "check line" }, notify, " Сообщить участникам, что обмен отменён") : null,
+    ex.active ? h("label", { class: "check line" }, notify, " Сообщить участникам, что обмен отменён") : null,
     h("button", {
       class: "btn danger", type: "button",
       onclick: async (ev) => {
+        // currentTarget is reset once the click handler yields, so take the button before awaiting the dialog.
+        const btn = ev.currentTarget;
         const text = `Удалить «${ex.settings.title}»? Семей: ${d.families.length}, детей: ${kids}, подарков: ${d.assignments.length}. Восстановить будет нельзя.`;
         if (!(await confirmAction(text))) return;
-        const btn = ev.currentTarget;
         btn.disabled = true;
         try {
-          const res = await api(`/api/exchanges/${ex.id}/delete`, { notify: running && notify.checked });
+          const res = await api(`/api/exchanges/${ex.id}/delete`, { notify: ex.active && notify.checked });
           haptic("success");
           toast(res.message);
-          setSection("exchange");
+          setSection("exchanges");
         } catch (e) {
           haptic("error");
           toast(e.message, true);
@@ -335,38 +374,38 @@ function deleteCard(d) {
 function scheduleLines(s) {
   const line = (label, value) => h("div", { class: "kv" }, h("span", { class: "muted" }, label), h("span", null, value));
   return h("div", { class: "line" },
-    line("Регистрация", s.registration_opens_at
-      ? `${fmtLocal(s.registration_opens_at)} – ${fmtLocal(s.registration_closes_at)}`
-      : "вручную"),
+    line("Регистрация", `${fmtLocal(s.registration_opens_at)} – ${fmtLocal(s.registration_closes_at)}`),
     line("Отправить подарки до", fmtDate(s.order_deadline) || "—"),
     line("Завершение", fmtDate(s.delivery_by) || "—"),
     line("Бюджет", `до ${s.budget_max} ${s.currency}`),
   );
 }
 
+function openButton(d, label, secondary) {
+  return [
+    h("button", {
+      class: "btn" + (secondary ? " secondary" : ""), type: "button", disabled: !d.can_open,
+      onclick: action("open", "Открыть регистрацию? Новые участники смогут зарегистрироваться по ссылке."),
+    }, label),
+    d.open_hint ? h("div", { class: "muted line" }, d.open_hint) : null,
+  ];
+}
+
 function stageCard(d) {
   const ex = d.exchange;
   const s = ex.settings;
   const p = d.preview;
-  const scheduled = !!s.registration_opens_at;
   switch (ex.status) {
     case "draft":
       return card(
-        h("h3", null, scheduled ? "Регистрация откроется по расписанию" : "Регистрация ещё не открыта"),
-        h("div", { class: "muted" }, scheduled
-          ? `Бот откроет её ${fmtLocal(s.registration_opens_at)} и напишет вам.`
-          : "Задайте даты в условиях ниже или откройте регистрацию вручную."),
-        h("button", {
-          class: "btn" + (scheduled ? " secondary" : ""), type: "button",
-          onclick: action("open", scheduled ? "Открыть регистрацию сейчас, раньше расписания?" : null),
-        }, scheduled ? "Открыть сейчас" : "Открыть регистрацию"),
+        h("h3", null, "Обмен запланирован"),
+        h("div", { class: "muted" }, `Регистрацию открываете вы, в любой момент с ${fmtLocal(s.registration_opens_at)} до ${fmtLocal(s.registration_closes_at)}.`),
+        openButton(d, "Открыть регистрацию", false),
       );
     case "registration_open":
       return card(
         h("h3", null, "Идёт регистрация"),
-        h("div", { class: "muted" }, scheduled
-          ? `Закроется ${fmtLocal(s.registration_closes_at)}, сразу после этого бот распределит детей и разошлёт карточки.`
-          : "Когда все семьи добавят детей, закройте регистрацию."),
+        h("div", { class: "muted" }, `Закроется ${fmtLocal(s.registration_closes_at)}, сразу после этого бот распределит детей и разошлёт карточки.`),
         h("button", { class: "btn secondary", type: "button", onclick: action("close", "Закрыть регистрацию сейчас? Новые участники не смогут присоединиться.") }, "Закрыть сейчас"),
       );
     case "registration_closed":
@@ -380,7 +419,7 @@ function stageCard(d) {
           class: "btn", type: "button", disabled: !p.possible,
           onclick: action("distribute", "Распределить детей? Отменить будет нельзя, участникам сразу придут карточки."),
         }, "Распределить детей"),
-        h("button", { class: "btn secondary", type: "button", onclick: action("open") }, "Открыть регистрацию снова"),
+        openButton(d, "Открыть регистрацию снова", true),
       );
     case "distributed": {
       const total = d.assignments.length;
@@ -393,25 +432,27 @@ function stageCard(d) {
           statBox(c.assigned, "не отправлено"), statBox(c.ordered, "отправлено"),
           statBox(c.arrived, "в ПВЗ"), statBox(d.assignments.filter(isProblem).length, "требуют внимания"),
         ),
-        h("button", { class: "btn secondary", type: "button", onclick: action("remind", "Напомнить всем, кто ещё не отправил или не забрал посылку?") }, "Напомнить отстающим"),
+        h("button", {
+          class: "btn secondary", type: "button",
+          onclick: (ev) => run("/api/remind", {}, "Напомнить всем, кто ещё не отправил или не забрал посылку?", ev.currentTarget),
+        }, "Напомнить отстающим"),
         h("button", { class: "btn danger", type: "button", onclick: action("finish", "Завершить обмен сейчас? Неполученные подарки запишутся в нарушения.") }, "Завершить сейчас"),
       );
     }
     case "completed":
-      return card(h("h3", null, "Обмен завершён"), h("div", { class: "muted" }, "Создайте следующий обмен в форме ниже, прошлые остаются в «Истории»."));
+      return card(h("h3", null, "Обмен завершён"), h("div", { class: "muted" }, "Он остаётся в списке обменов вместе с распределением и нарушениями."));
   }
   return null;
 }
 
 function inviteText(s) {
-  const lines = [
+  return [
     `Приглашаем детей в обмен подарками «${s.title}» 🎁`,
     `Каждая семья дарит подарки детям из других семей: бот подскажет, кому и на какой ПВЗ Wildberries заказать. Бюджет подарка до ${s.budget_max} ${s.currency}.`,
-  ];
-  if (s.registration_closes_at) lines.push("Регистрация до " + fmtLocal(s.registration_closes_at) + ".");
-  if (s.order_deadline) lines.push("Отправить подарок нужно до " + fmtDate(s.order_deadline) + ", все подарки дети получат до " + fmtDate(s.delivery_by) + ".");
-  lines.push("Чтобы участвовать, откройте бота по ссылке и зарегистрируйтесь:");
-  return lines.join("\n");
+    "Регистрация до " + fmtLocal(s.registration_closes_at) + ".",
+    "Отправить подарок нужно до " + fmtDate(s.order_deadline) + ", все подарки дети получат до " + fmtDate(s.delivery_by) + ".",
+    "Чтобы участвовать, откройте бота по ссылке и зарегистрируйтесь:",
+  ].join("\n");
 }
 
 function inviteCard() {
@@ -449,45 +490,56 @@ function inviteCard() {
   );
 }
 
-// settingsForm edits the current exchange, or creates the next one when ex is null.
+// settingsForm edits an exchange, or creates one when ex is null. A new exchange starts with empty fields.
 function settingsForm(ex) {
-  const prev = data.exchange.exchange.settings;
-  const s = ex ? ex.settings : { title: "", budget_max: prev.budget_max, currency: prev.currency };
+  const s = ex ? ex.settings : {};
   const regLocked = !!ex && !["draft", "registration_open"].includes(ex.status);
-  const title = h("input", { type: "text", maxlength: "100", value: s.title || "", placeholder: "Например, Новый год 2027" });
-  const budget = h("input", { type: "number", min: "1", max: "100000", step: "1", inputmode: "numeric", value: s.budget_max });
-  const currency = h("input", { type: "text", maxlength: "10", value: s.currency });
+  const title = h("input", { type: "text", maxlength: "100", value: s.title || "", placeholder: "Например, Новый год 2026" });
+  const budget = h("input", { type: "number", min: "1", max: "100000", step: "1", inputmode: "numeric", value: s.budget_max || "", placeholder: "25" });
+  const currency = h("input", { type: "text", maxlength: "10", value: s.currency || "", placeholder: "BYN" });
   const opens = h("input", { type: "datetime-local", value: s.registration_opens_at || "", disabled: regLocked || (!!ex && ex.status === "registration_open") });
   const closes = h("input", { type: "datetime-local", value: s.registration_closes_at || "", disabled: regLocked });
   const order = h("input", { type: "date", value: s.order_deadline || "" });
   const delivery = h("input", { type: "date", value: s.delivery_by || "" });
 
+  const submit = async (ev) => {
+    const btn = ev.currentTarget;
+    const body = {
+      title: title.value.trim(), budget_max: Number(budget.value), currency: currency.value.trim(),
+      registration_opens_at: opens.value, registration_closes_at: closes.value,
+      order_deadline: order.value, delivery_by: delivery.value,
+    };
+    if (!body.title || !body.budget_max || !body.currency || !opens.value || !closes.value || !order.value || !delivery.value) {
+      return toast("Заполните все поля", true);
+    }
+    if (ex) return run(`/api/exchanges/${ex.id}/settings`, body, null, btn);
+    btn.disabled = true;
+    try {
+      const res = await api("/api/exchanges", body);
+      haptic("success");
+      toast(res.message);
+      openExchange(res.id);
+    } catch (e) {
+      haptic("error");
+      toast(e.message, true);
+      btn.disabled = false;
+    }
+  };
+
   return card(
-    h("h3", null, ex ? "Условия и расписание" : "Новый обмен"),
+    ex ? h("h3", null, "Условия и расписание") : null,
     field("Название", title),
     h("div", { class: "field-row" }, field("Бюджет подарка, до", budget), field("Валюта", currency)),
     h("div", { class: "field-row even" }, field("Регистрация с", opens), field("Регистрация до", closes)),
     h("div", { class: "muted" }, regLocked
       ? "Регистрация уже прошла, её даты не меняются."
-      : "Пустые даты регистрации значат ручное управление. После закрытия по расписанию бот сразу распределит детей."),
+      : "Регистрацию открываете вы кнопкой в эти даты. В конце регистрации бот сам её закроет и распределит детей."),
     h("div", { class: "field-row even" }, field("Отправить подарки до", order), field("Завершение обмена", delivery)),
-    h("div", { class: "muted" }, "После срока отправки бот запишет в нарушения тех, кто не отправил подарок. В день завершения обмен закроется, недоставленные подарки тоже попадут в нарушения."),
+    h("div", { class: "muted" }, "После срока отправки бот запишет в нарушения тех, кто не отправил подарок. После дня завершения обмен закроется, недоставленные подарки тоже попадут в нарушения."),
     ex && ex.status === "distributed"
       ? h("div", { class: "muted line" }, "Карточки уже разосланы: новые условия попадут только в следующие сообщения.")
       : null,
-    h("button", {
-      class: "btn" + (ex ? " secondary" : ""), type: "button",
-      onclick: (ev) => {
-        if (!order.value || !delivery.value) return toast("Укажите срок отправки и дату завершения", true);
-        const body = {
-          title: title.value.trim(), budget_max: Number(budget.value), currency: currency.value.trim(),
-          registration_opens_at: opens.value, registration_closes_at: closes.value,
-          order_deadline: order.value, delivery_by: delivery.value,
-        };
-        if (ex) run("/api/settings", body, null, ev.currentTarget);
-        else run("/api/exchanges", body, "Создать новый обмен с этими условиями?", ev.currentTarget);
-      },
-    }, ex ? "Сохранить" : "Создать обмен"),
+    h("button", { class: "btn" + (ex ? " secondary" : ""), type: "button", onclick: submit }, ex ? "Сохранить" : "Создать обмен"),
   );
 }
 
@@ -613,7 +665,7 @@ function giftCard(a) {
     contactLine(a.giver),
   );
   const ex = data.exchange.exchange;
-  if (ex.current && ex.status === "distributed" && a.status !== "received") c.append(reassignControl(a));
+  if (ex.active && ex.status === "distributed" && a.status !== "received") c.append(reassignControl(a));
   return c;
 }
 
@@ -688,31 +740,6 @@ function renderViolations() {
       ? "Нарушений нет 🎉" : "Нарушения появятся после срока отправки подарков"));
   }
   return out.concat(d.violations.map((v) => violationCard(v, false)));
-}
-
-// ---------- history ----------
-
-function renderHistory() {
-  if (!data.history.length) return [empty("Обменов ещё не было")];
-  return data.history.map((x) => {
-    const s = x.settings;
-    return h("div", { class: "card clickable", onclick: () => openExchange(x.id) },
-      h("div", { class: "row" },
-        h("h3", null, s.title),
-        h("span", { class: "spacer" }),
-        h("span", { class: "badge" + (x.current ? " ordered" : "") }, x.status_title),
-      ),
-      h("div", { class: "muted" }, [
-        s.registration_opens_at ? "регистрация с " + fmtLocal(s.registration_opens_at) : "создан " + fmtDate(x.created_at),
-        s.delivery_by ? "завершение " + fmtDate(s.delivery_by) : null,
-      ].filter(Boolean).join(" · ")),
-      h("div", { class: "row line" },
-        h("span", null, `${x.families} семей · ${x.children} детей`),
-        x.gifts ? h("span", { class: "muted" }, `получено ${x.received}/${x.gifts}`) : null,
-        x.violations ? h("span", { class: "badge flag" }, "🚩 " + x.violations) : null,
-      ),
-    );
-  });
 }
 
 // ---------- people ----------

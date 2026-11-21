@@ -225,13 +225,19 @@ function statBox(n, label) {
   return h("div", { class: "stat" }, h("b", null, n || 0), h("span", { class: "muted" }, label));
 }
 
+function budgetText(s) {
+  return `до ${s.budget_max} ${s.currency}`;
+}
+
 function inviteText() {
   const s = state.settings;
   const lines = [
     "Приглашаем детей в новогодний обмен подарками 🎁",
-    "Каждая семья дарит подарки детям из других семей: бот подскажет, кому и на какой ПВЗ Wildberries заказать. Бюджет подарка " + s.budget + ".",
+    "Каждая семья дарит подарки детям из других семей: бот подскажет, кому и на какой ПВЗ Wildberries заказать. Бюджет подарка " + budgetText(s) + ".",
   ];
-  if (s.order_deadline) lines.push("Заказать подарок нужно до " + s.order_deadline + ", все подарки дети получат до " + s.delivery_by + ".");
+  if (s.order_deadline && s.delivery_by) {
+    lines.push("Заказать подарок нужно до " + fmtDate(s.order_deadline) + ", все подарки дети получат до " + fmtDate(s.delivery_by) + ".");
+  }
   lines.push("Чтобы участвовать, откройте бота по ссылке и зарегистрируйтесь:");
   return lines.join("\n");
 }
@@ -286,12 +292,30 @@ function inviteCard() {
 
 function settingsCard() {
   const s = state.settings;
+  const budget = h("input", { type: "number", min: "1", max: "100000", step: "1", inputmode: "numeric", value: s.budget_max });
+  const currency = h("input", { type: "text", maxlength: "10", value: s.currency });
+  const order = h("input", { type: "date", value: s.order_deadline });
+  const delivery = h("input", { type: "date", value: s.delivery_by });
+  const field = (label, input) => h("label", { class: "field" }, h("span", { class: "muted" }, label), input);
+
   return h("div", { class: "card" },
     h("h3", null, "Условия"),
-    h("div", null, "Бюджет подарка: " + s.budget),
-    s.order_deadline ? h("div", null, "Заказать до: " + s.order_deadline) : null,
-    h("div", null, "Все подарки получены до: " + s.delivery_by),
-    h("div", { class: "muted line" }, "Меняются в настройках сервера."),
+    h("div", { class: "field-row" }, field("Бюджет подарка, до", budget), field("Валюта", currency)),
+    field("Заказать подарок до", order),
+    field("Дети получают подарки до", delivery),
+    state.exchange.status === "distributed"
+      ? h("div", { class: "muted line" }, "Карточки уже разосланы. Новые условия попадут в следующие сообщения и напоминания, старые сообщения не изменятся.")
+      : null,
+    h("button", {
+      class: "btn secondary", type: "button",
+      onclick: (ev) => {
+        if (!order.value || !delivery.value) return toast("Укажите обе даты", true);
+        run("/api/settings", {
+          budget_max: Number(budget.value), currency: currency.value.trim(),
+          order_deadline: order.value, delivery_by: delivery.value,
+        }, null, ev.currentTarget);
+      },
+    }, "Сохранить условия"),
   );
 }
 

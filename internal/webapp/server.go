@@ -5,7 +5,6 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -34,6 +33,8 @@ type Admin interface {
 	Reassign(ctx context.Context, childID, giverID int64) error
 	Broadcast(ctx context.Context, text string) (int, error)
 	InviteLink() string
+	Settings() bot.Settings
+	UpdateSettings(ctx context.Context, s bot.Settings) error
 }
 
 type Server struct {
@@ -56,6 +57,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/action", s.auth(s.handleAction))
 	mux.Handle("POST /api/reassign", s.auth(s.handleReassign))
 	mux.Handle("POST /api/broadcast", s.auth(s.handleBroadcast))
+	mux.Handle("POST /api/settings", s.auth(s.handleSettings))
 	return securityHeaders(mux)
 }
 
@@ -163,11 +165,7 @@ type stateJSON struct {
 		Status string `json:"status"`
 		Title  string `json:"title"`
 	} `json:"exchange"`
-	Settings struct {
-		Budget        string `json:"budget"`
-		OrderDeadline string `json:"order_deadline"`
-		DeliveryBy    string `json:"delivery_by"`
-	} `json:"settings"`
+	Settings    settingsJSON            `json:"settings"`
 	Invite      string                  `json:"invite"`
 	Preview     bot.DistributionPreview `json:"preview"`
 	Families    []familyJSON            `json:"families"`
@@ -197,9 +195,7 @@ func (s *Server) buildState(ctx context.Context) (stateJSON, error) {
 		return out, err
 	}
 	out.Exchange.ID, out.Exchange.Status, out.Exchange.Title = ex.ID, string(ex.Status), bot.StatusTitle(ex.Status)
-	out.Settings.Budget = budgetText(s.cfg)
-	out.Settings.OrderDeadline = s.cfg.OrderDeadline
-	out.Settings.DeliveryBy = s.cfg.DeliveryTarget
+	out.Settings = settingsToJSON(s.admin.Settings())
 	out.Invite = s.admin.InviteLink()
 
 	if out.Preview, err = s.admin.PreviewDistribution(ctx); err != nil {
@@ -266,8 +262,40 @@ func (s *Server) buildState(ctx context.Context) (stateJSON, error) {
 	return out, nil
 }
 
-func budgetText(cfg config.Config) string {
-	return fmt.Sprintf("до %d %s", cfg.GiftBudgetMax, cfg.GiftCurrency)
+// settingsJSON carries dates as YYYY-MM-DD for <input type="date">; empty means not set.
+type settingsJSON struct {
+	BudgetMax     int    `json:"budget_max"`
+	Currency      string `json:"currency"`
+	OrderDeadline string `json:"order_deadline"`
+	DeliveryBy    string `json:"delivery_by"`
+}
+
+func settingsToJSON(st bot.Settings) settingsJSON {
+	out := settingsJSON{BudgetMax: st.BudgetMax, Currency: st.Currency}
+	if !st.OrderDeadline.IsZero() {
+		out.OrderDeadline = st.OrderDeadline.Format(time.DateOnly)
+	}
+	if !st.DeliveryBy.IsZero() {
+		out.DeliveryBy = st.DeliveryBy.Format(time.DateOnly)
+	}
+	return out
+}
+
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	var req settingsJSON
+	if !readJSON(w, r, &req) {
+		return
+	}
+	order, err1 := time.Parse(time.DateOnly, req.OrderDeadline)
+	delivery, err2 := time.Parse(time.DateOnly, req.DeliveryBy)
+	if err1 != nil || err2 != nil {
+		writeError(w, http.StatusBadRequest, "Укажите обе даты.")
+		return
+	}
+	err := s.admin.UpdateSettings(r.Context(), bot.Settings{
+		BudgetMax: req.BudgetMax, Currency: req.Currency, OrderDeadline: order, DeliveryBy: delivery,
+	})
+	s.reply(w, "Условия сохранены. Новые сообщения бота будут с ними, уже отправленные не изменятся.", err)
 }
 
 // ---------- actions ----------

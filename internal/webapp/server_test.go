@@ -31,11 +31,13 @@ func (f *fakeAdmin) NewExchange(context.Context) error { return nil }
 func (f *fakeAdmin) PreviewDistribution(context.Context) (bot.DistributionPreview, error) {
 	return bot.DistributionPreview{Families: 1, Children: 2}, nil
 }
-func (f *fakeAdmin) Distribute(context.Context) (int, error)        { return 0, nil }
-func (f *fakeAdmin) RemindNow(context.Context) (int, error)         { return 0, nil }
-func (f *fakeAdmin) Reassign(context.Context, int64, int64) error   { return nil }
-func (f *fakeAdmin) Broadcast(context.Context, string) (int, error) { return 0, nil }
-func (f *fakeAdmin) InviteLink() string                             { return "https://t.me/test_bot?start=x" }
+func (f *fakeAdmin) Distribute(context.Context) (int, error)            { return 0, nil }
+func (f *fakeAdmin) RemindNow(context.Context) (int, error)             { return 0, nil }
+func (f *fakeAdmin) Reassign(context.Context, int64, int64) error       { return nil }
+func (f *fakeAdmin) Broadcast(context.Context, string) (int, error)     { return 0, nil }
+func (f *fakeAdmin) Settings() bot.Settings                             { return bot.Settings{BudgetMax: 25, Currency: "BYN"} }
+func (f *fakeAdmin) UpdateSettings(context.Context, bot.Settings) error { return nil }
+func (f *fakeAdmin) InviteLink() string                                 { return "https://t.me/test_bot?start=x" }
 
 func testStore(t *testing.T) *store.Store {
 	t.Helper()

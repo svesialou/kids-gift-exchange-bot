@@ -56,6 +56,9 @@ func run() error {
 	slog.Info("bot started", "username", api.Self.UserName, "admins", len(cfg.AdminIDs))
 
 	b := bot.New(api, st, cfg)
+	if err := b.LoadSettings(ctx); err != nil {
+		return err
+	}
 	go b.RunScheduler(ctx)
 	if cfg.WebAppURL != "" {
 		b.SetupAdminMenuButtons()

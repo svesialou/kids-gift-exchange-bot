@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -37,6 +38,8 @@ type Bot struct {
 	cfg    config.Config
 	policy domain.ReminderPolicy
 	now    func() time.Time
+
+	settings atomic.Pointer[Settings]
 }
 
 func New(api *tgbotapi.BotAPI, st *store.Store, cfg config.Config) *Bot {
@@ -380,17 +383,6 @@ func genderText(g string) string {
 	return "мальчик"
 }
 
-func (b *Bot) budgetText() string {
-	return fmt.Sprintf("до %d %s", b.cfg.GiftBudgetMax, b.cfg.GiftCurrency)
-}
-
-func (b *Bot) orderDeadlineText() string {
-	if b.cfg.OrderDeadline == "" {
-		return "как можно скорее"
-	}
-	return "до " + b.cfg.OrderDeadline
-}
-
 func (b *Bot) rulesText() string {
 	return fmt.Sprintf(`<b>Как это работает</b>
 
@@ -401,7 +393,7 @@ func (b *Bot) rulesText() string {
 5. Когда посылка придёт, нажимаешь «Пришло в ПВЗ». Получатель попросит код, и ты присылаешь его из приложения WB текстом или скриншотом QR.
 6. Код живёт только один день. Если посылку не забрали, получатель запросит новый код, а бот напомнит обоим.
 7. Цель: все дети получают подарки до %s.`,
-		btnGive, b.budgetText(), b.orderDeadlineText(), esc(b.cfg.DeliveryTarget))
+		btnGive, b.budgetText(), b.orderDeadlineText(), b.deliveryText())
 }
 
 func (b *Bot) localDate(t time.Time) string {

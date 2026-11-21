@@ -44,7 +44,9 @@ Commands are hidden from the menu and work only for ids from `ADMIN_IDS`. `/admi
 
 ## Configuration
 
-All settings come from environment variables, see `.env.example`. Required: `TELEGRAM_BOT_TOKEN`, `DB_PASSWORD`. Budget (`GIFT_BUDGET_MAX`, `GIFT_CURRENCY`), deadlines and reminder hours can be changed with a restart. Migrations run automatically on start.
+All settings come from environment variables, see `.env.example`. Required: `TELEGRAM_BOT_TOKEN`, `DB_PASSWORD`. Reminder hours can be changed with a restart.
+
+Budget, currency and both deadlines are edited by organizers in the panel («Обзор» → «Условия») and stored per exchange. `GIFT_BUDGET_MAX`, `GIFT_CURRENCY`, `ORDER_DEADLINE` and `DELIVERY_DEADLINE` are only the defaults for an exchange where nothing was saved yet. Migrations run automatically on start.
 
 ## Development
 

@@ -187,6 +187,28 @@ func TestExchangeLifecycle(t *testing.T) {
 	mustFalse(t, fresh, err, "duplicate reminder same day")
 }
 
+func TestExchangeSettings(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	ex, err := st.CurrentExchange(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.ExchangeSettings(ctx, ex.ID)
+	if err != nil || got.BudgetMax != nil || got.Currency != nil || got.OrderDeadline != nil || got.DeliveryDeadline != nil {
+		t.Fatalf("new exchange must have no overrides: %+v %v", got, err)
+	}
+	order := time.Date(2026, 12, 13, 0, 0, 0, 0, time.UTC)
+	delivery := time.Date(2026, 12, 25, 0, 0, 0, 0, time.UTC)
+	if err := st.SaveExchangeSettings(ctx, ex.ID, 30, "BYN", order, delivery); err != nil {
+		t.Fatal(err)
+	}
+	got, err = st.ExchangeSettings(ctx, ex.ID)
+	if err != nil || *got.BudgetMax != 30 || *got.Currency != "BYN" || !got.OrderDeadline.Equal(order) || !got.DeliveryDeadline.Equal(delivery) {
+		t.Fatalf("saved settings not read back: %+v %v", got, err)
+	}
+}
+
 func TestSessionRoundTrip(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()

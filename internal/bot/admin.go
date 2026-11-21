@@ -77,7 +77,10 @@ func (b *Bot) NewExchange(ctx context.Context) error {
 	if ex.Status != domain.ExchangeCompleted {
 		return refuse("Новый обмен можно начать только после завершения текущего.")
 	}
-	return b.store.CreateExchange(ctx)
+	if err := b.store.CreateExchange(ctx); err != nil {
+		return err
+	}
+	return b.LoadSettings(ctx)
 }
 
 type DistributionPreview struct {

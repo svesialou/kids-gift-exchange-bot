@@ -97,6 +97,48 @@ func (s *Store) CreateExchange(ctx context.Context) error {
 	return nil
 }
 
+// ExchangeSettings holds per-exchange overrides; nil means "use the default from env".
+type ExchangeSettings struct {
+	BudgetMax        *int
+	Currency         *string
+	OrderDeadline    *time.Time
+	DeliveryDeadline *time.Time
+}
+
+func (s *Store) ExchangeSettings(ctx context.Context, exchangeID int64) (ExchangeSettings, error) {
+	var budget sql.NullInt64
+	var currency sql.NullString
+	var order, delivery sql.NullTime
+	err := s.db.QueryRowContext(ctx,
+		`SELECT gift_budget_max, gift_currency, order_deadline, delivery_deadline FROM exchanges WHERE id = ?`, exchangeID,
+	).Scan(&budget, &currency, &order, &delivery)
+	if err != nil {
+		return ExchangeSettings{}, fmt.Errorf("exchange settings: %w", err)
+	}
+	var out ExchangeSettings
+	if budget.Valid {
+		v := int(budget.Int64)
+		out.BudgetMax = &v
+	}
+	if currency.Valid {
+		out.Currency = &currency.String
+	}
+	out.OrderDeadline = nullTime(order)
+	out.DeliveryDeadline = nullTime(delivery)
+	return out, nil
+}
+
+func (s *Store) SaveExchangeSettings(ctx context.Context, exchangeID int64, budgetMax int, currency string, orderDeadline, deliveryDeadline time.Time) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE exchanges SET gift_budget_max = ?, gift_currency = ?, order_deadline = ?, delivery_deadline = ?
+		WHERE id = ?`,
+		budgetMax, currency, orderDeadline.Format("2006-01-02"), deliveryDeadline.Format("2006-01-02"), exchangeID)
+	if err != nil {
+		return fmt.Errorf("save exchange settings: %w", err)
+	}
+	return nil
+}
+
 // TransitionExchange moves the exchange to `to` only if it is currently in one of `from`.
 func (s *Store) TransitionExchange(ctx context.Context, id int64, to domain.ExchangeStatus, from ...domain.ExchangeStatus) (bool, error) {
 	query := `UPDATE exchanges SET status = ?, completed_at = IF(? = 'completed', UTC_TIMESTAMP(), completed_at) WHERE id = ? AND status IN (` + placeholders(len(from)) + `)`

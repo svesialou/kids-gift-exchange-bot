@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -15,7 +16,234 @@ import (
 	"github.com/svesialou/kids-gift-exchange-bot/internal/store"
 )
 
+// ActionError is a refusal the organizer should see as is (wrong state, bad input).
+type ActionError struct{ Msg string }
+
+func (e *ActionError) Error() string { return e.Msg }
+
+func refuse(format string, args ...any) error {
+	return &ActionError{Msg: fmt.Sprintf(format, args...)}
+}
+
+var statusTitles = map[domain.ExchangeStatus]string{
+	domain.ExchangeDraft:       "черновик",
+	domain.ExchangeOpen:        "регистрация открыта",
+	domain.ExchangeClosed:      "регистрация закрыта",
+	domain.ExchangeDistributed: "дети распределены",
+	domain.ExchangeCompleted:   "обмен завершён",
+}
+
+func StatusTitle(s domain.ExchangeStatus) string {
+	if t, ok := statusTitles[s]; ok {
+		return t
+	}
+	return string(s)
+}
+
+var transitions = map[string]struct {
+	to   domain.ExchangeStatus
+	from []domain.ExchangeStatus
+}{
+	"open":   {domain.ExchangeOpen, []domain.ExchangeStatus{domain.ExchangeDraft, domain.ExchangeClosed}},
+	"close":  {domain.ExchangeClosed, []domain.ExchangeStatus{domain.ExchangeOpen}},
+	"finish": {domain.ExchangeCompleted, []domain.ExchangeStatus{domain.ExchangeDistributed}},
+}
+
+// ChangeExchangeStatus applies one of the actions open, close, finish to the current exchange.
+func (b *Bot) ChangeExchangeStatus(ctx context.Context, action string) (domain.ExchangeStatus, error) {
+	t, ok := transitions[action]
+	if !ok {
+		return "", refuse("Неизвестное действие %q.", action)
+	}
+	ex, err := b.store.CurrentExchange(ctx)
+	if err != nil {
+		return "", err
+	}
+	ok, err = b.store.TransitionExchange(ctx, ex.ID, t.to, t.from...)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", refuse("Нельзя: сейчас «%s».", StatusTitle(ex.Status))
+	}
+	return t.to, nil
+}
+
+func (b *Bot) NewExchange(ctx context.Context) error {
+	ex, err := b.store.CurrentExchange(ctx)
+	if err != nil {
+		return err
+	}
+	if ex.Status != domain.ExchangeCompleted {
+		return refuse("Новый обмен можно начать только после завершения текущего.")
+	}
+	return b.store.CreateExchange(ctx)
+}
+
+type DistributionPreview struct {
+	Families int    `json:"families"`
+	Children int    `json:"children"`
+	Possible bool   `json:"possible"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+func (b *Bot) PreviewDistribution(ctx context.Context) (DistributionPreview, error) {
+	ex, err := b.store.CurrentExchange(ctx)
+	if err != nil {
+		return DistributionPreview{}, err
+	}
+	refs, err := b.store.ChildRefs(ctx, ex.ID)
+	if err != nil {
+		return DistributionPreview{}, err
+	}
+	families := map[int64]bool{}
+	for _, r := range refs {
+		families[r.ParentID] = true
+	}
+	p := DistributionPreview{Families: len(families), Children: len(refs), Possible: true}
+	switch {
+	case ex.Status != domain.ExchangeClosed:
+		p.Possible, p.Reason = false, fmt.Sprintf("Распределять можно только после закрытия регистрации, сейчас «%s».", StatusTitle(ex.Status))
+	default:
+		if _, err := domain.Distribute(refs, rand.New(rand.NewSource(1))); err != nil {
+			p.Possible, p.Reason = false, "Нужно минимум две семьи, и ни одна семья не может привести больше половины всех детей."
+		}
+	}
+	return p, nil
+}
+
+// Distribute assigns givers once and sends every participant their cards.
+func (b *Bot) Distribute(ctx context.Context) (int, error) {
+	preview, err := b.PreviewDistribution(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if !preview.Possible {
+		return 0, refuse("%s", preview.Reason)
+	}
+	ex, err := b.store.CurrentExchange(ctx)
+	if err != nil {
+		return 0, err
+	}
+	rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
+	n, err := b.store.Distribute(ctx, ex.ID, func(refs []domain.ChildRef) ([]domain.Pair, error) {
+		return domain.Distribute(refs, rnd)
+	})
+	if err != nil {
+		return 0, err
+	}
+	list, err := b.store.AssignmentsByExchange(ctx, ex.ID)
+	if err != nil {
+		return n, err
+	}
+	b.notifyDistribution(list)
+	b.notifyAdmins(fmt.Sprintf("✅ Распределение готово: %d подарков. Участникам отправлены карточки.", n))
+	return n, nil
+}
+
+// RemindNow sends the most relevant reminder for every unfinished gift, ignoring the daily schedule.
+func (b *Bot) RemindNow(ctx context.Context) (int, error) {
+	ex, err := b.store.CurrentExchange(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if ex.Status != domain.ExchangeDistributed {
+		return 0, refuse("Напоминания работают только после распределения.")
+	}
+	list, err := b.store.AssignmentsByExchange(ctx, ex.ID)
+	if err != nil {
+		return 0, err
+	}
+	sent := 0
+	now := b.now()
+	for _, a := range list {
+		st := a.PickupState()
+		switch {
+		case a.Status == domain.AssignmentAssigned:
+			b.sendReminder(domain.RemindGiverOrder, a)
+		case a.Status == domain.AssignmentArrived && st.CodeRequestPending():
+			b.sendReminder(domain.RemindGiverCodePending, a)
+		case a.Status == domain.AssignmentArrived && !st.CodeValid(now):
+			b.sendReminder(domain.RemindRecipientPickup, a)
+		default:
+			continue
+		}
+		sent++
+	}
+	return sent, nil
+}
+
+// Reassign hands a child's gift to another participant and notifies both givers.
+func (b *Bot) Reassign(ctx context.Context, childID, giverID int64) error {
+	ex, err := b.store.CurrentExchange(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := b.store.UserByID(ctx, giverID); errors.Is(err, store.ErrNotFound) {
+		return refuse("Нет участника с id %d.", giverID)
+	} else if err != nil {
+		return err
+	}
+	list, err := b.store.AssignmentsByExchange(ctx, ex.ID)
+	if err != nil {
+		return err
+	}
+	var old *store.Assignment
+	for i := range list {
+		if list[i].ChildID == childID {
+			old = &list[i]
+			break
+		}
+	}
+	if old == nil {
+		return refuse("Ребёнок %d не найден в распределении.", childID)
+	}
+	if old.Giver.ID == giverID {
+		return refuse("Этот участник уже дарит подарок этому ребёнку.")
+	}
+	ok, err := b.store.Reassign(ctx, ex.ID, childID, giverID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return refuse("Нельзя: подарок уже получен или новый даритель — родитель этого ребёнка.")
+	}
+	updated, err := b.store.Assignment(ctx, old.ID)
+	if err != nil {
+		return err
+	}
+	b.send(old.Giver.TgID, fmt.Sprintf("Организатор передал подарок для %s другому участнику. Спасибо!", esc(old.ChildFirstName)), nil)
+	b.sendGiverCard(updated, "🎁 Организатор добавил тебе ещё одного ребёнка:")
+	return nil
+}
+
+func (b *Bot) Broadcast(ctx context.Context, text string) (int, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0, refuse("Пустое сообщение.")
+	}
+	ids, err := b.store.AllUserTgIDs(ctx)
+	if err != nil {
+		return 0, err
+	}
+	for _, id := range ids {
+		b.send(id, "📣 "+esc(text), nil)
+	}
+	return len(ids), nil
+}
+
+func (b *Bot) InviteLink() string {
+	if b.cfg.InviteCode == "" {
+		return "https://t.me/" + b.api.Self.UserName
+	}
+	return fmt.Sprintf("https://t.me/%s?start=%s", b.api.Self.UserName, b.cfg.InviteCode)
+}
+
+// ---------- chat commands ----------
+
 const adminHelp = `<b>Команды организатора</b>
+
+Удобнее управлять обменом через панель: кнопка «Панель» слева от поля ввода или /admin.
 
 /invite — ссылка-приглашение
 /open — открыть регистрацию
@@ -31,76 +259,58 @@ const adminHelp = `<b>Команды организатора</b>
 
 func (b *Bot) handleAdminCommand(ctx context.Context, msg *tgbotapi.Message, cmd, args string) (bool, error) {
 	tgID := msg.From.ID
+	var err error
 	switch cmd {
 	case "admin":
-		b.send(tgID, adminHelp, nil)
+		b.sendAdminPanelButton(tgID, adminHelp)
 	case "invite":
-		b.adminInvite(tgID)
-	case "open":
-		return true, b.adminTransition(ctx, tgID, domain.ExchangeOpen, "Регистрация открыта.", domain.ExchangeDraft, domain.ExchangeClosed)
-	case "close":
-		return true, b.adminTransition(ctx, tgID, domain.ExchangeClosed, "Регистрация закрыта. Проверь /families и запускай /distribute.", domain.ExchangeOpen)
-	case "finish":
-		return true, b.adminTransition(ctx, tgID, domain.ExchangeCompleted, "Обмен завершён. Напоминания остановлены.", domain.ExchangeDistributed)
+		b.send(tgID, "Ссылка-приглашение:\n"+esc(b.InviteLink()), nil)
+	case "open", "close", "finish":
+		var to domain.ExchangeStatus
+		if to, err = b.ChangeExchangeStatus(ctx, cmd); err == nil {
+			b.send(tgID, "Готово: "+StatusTitle(to)+".", nil)
+		}
 	case "new_exchange":
-		return true, b.adminNewExchange(ctx, tgID)
+		if err = b.NewExchange(ctx); err == nil {
+			b.send(tgID, "Создан новый обмен. Открой регистрацию командой /open.", nil)
+		}
 	case "families":
-		return true, b.adminFamilies(ctx, tgID)
+		err = b.adminFamilies(ctx, tgID)
 	case "distribute":
-		return true, b.adminDistributePreview(ctx, tgID)
+		err = b.adminDistributePreview(ctx, tgID)
 	case "status":
-		return true, b.adminStatus(ctx, tgID)
+		err = b.adminStatus(ctx, tgID)
 	case "remind":
-		return true, b.adminRemind(ctx, tgID)
+		var n int
+		if n, err = b.RemindNow(ctx); err == nil {
+			b.send(tgID, fmt.Sprintf("Отправлено напоминаний: %d.", n), nil)
+		}
 	case "reassign":
-		return true, b.adminReassign(ctx, tgID, args)
+		err = b.adminReassign(ctx, tgID, args)
 	case "broadcast":
-		return true, b.adminBroadcast(ctx, tgID, args)
+		var n int
+		if n, err = b.Broadcast(ctx, args); err == nil {
+			b.send(tgID, fmt.Sprintf("Отправлено %d участникам.", n), nil)
+		}
 	default:
 		return false, nil
 	}
-	return true, nil
+	return true, b.replyRefusal(tgID, err)
 }
 
-func (b *Bot) adminInvite(tgID int64) {
-	if b.cfg.InviteCode == "" {
-		b.send(tgID, fmt.Sprintf("INVITE_CODE не задан, бот открыт для всех: https://t.me/%s", b.api.Self.UserName), nil)
-		return
-	}
-	b.send(tgID, fmt.Sprintf("Ссылка-приглашение:\nhttps://t.me/%s?start=%s", b.api.Self.UserName, esc(b.cfg.InviteCode)), nil)
-}
-
-func (b *Bot) adminTransition(ctx context.Context, tgID int64, to domain.ExchangeStatus, done string, from ...domain.ExchangeStatus) error {
-	ex, err := b.store.CurrentExchange(ctx)
-	if err != nil {
-		return err
-	}
-	ok, err := b.store.TransitionExchange(ctx, ex.ID, to, from...)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		b.send(tgID, fmt.Sprintf("Нельзя: сейчас обмен в статусе «%s».", ex.Status), nil)
+// replyRefusal shows ActionError text to the admin and passes other errors up.
+func (b *Bot) replyRefusal(tgID int64, err error) error {
+	var ae *ActionError
+	if errors.As(err, &ae) {
+		b.send(tgID, esc(ae.Msg), nil)
 		return nil
 	}
-	b.send(tgID, done, nil)
-	return nil
+	return err
 }
 
-func (b *Bot) adminNewExchange(ctx context.Context, tgID int64) error {
-	ex, err := b.store.CurrentExchange(ctx)
-	if err != nil {
-		return err
-	}
-	if ex.Status != domain.ExchangeCompleted {
-		b.send(tgID, "Новый обмен можно начать только после /finish текущего.", nil)
-		return nil
-	}
-	if err := b.store.CreateExchange(ctx); err != nil {
-		return err
-	}
-	b.send(tgID, "Создан новый обмен в статусе draft. Открой регистрацию командой /open.", nil)
-	return nil
+func (b *Bot) confirmDistribution(ctx context.Context, tgID int64) error {
+	_, err := b.Distribute(ctx)
+	return b.replyRefusal(tgID, err)
 }
 
 func (b *Bot) adminFamilies(ctx context.Context, tgID int64) error {
@@ -116,79 +326,40 @@ func (b *Bot) adminFamilies(ctx context.Context, tgID int64) error {
 	total := 0
 	for _, p := range list {
 		total += p.Children
-		username := ""
-		if p.TgUsername != "" {
-			username = " @" + p.TgUsername
-		}
 		fmt.Fprintf(&sb, "[user %d] %s %s%s, %s\nПВЗ: %s\nДетей: %d\n\n",
-			p.ID, esc(p.LastName), esc(p.FirstName), esc(username), esc(p.Phone), esc(p.PVZAddress), p.Children)
+			p.ID, esc(p.LastName), esc(p.FirstName), usernameSuffix(p.User), esc(p.Phone), esc(p.PVZAddress), p.Children)
 	}
-	header := fmt.Sprintf("<b>Обмен #%d, статус %s</b>\nСемей: %d, детей: %d\n\n", ex.ID, ex.Status, len(list), total)
+	header := fmt.Sprintf("<b>Обмен #%d: %s</b>\nСемей: %d, детей: %d\n\n", ex.ID, StatusTitle(ex.Status), len(list), total)
 	b.send(tgID, header+sb.String(), nil)
 	return nil
 }
 
 func (b *Bot) adminDistributePreview(ctx context.Context, tgID int64) error {
-	ex, err := b.store.CurrentExchange(ctx)
+	p, err := b.PreviewDistribution(ctx)
 	if err != nil {
 		return err
 	}
-	if ex.Status != domain.ExchangeClosed {
-		b.send(tgID, fmt.Sprintf("Распределять можно только после закрытия регистрации. Сейчас статус «%s».", ex.Status), nil)
-		return nil
-	}
-	refs, err := b.store.ChildRefs(ctx, ex.ID)
-	if err != nil {
-		return err
-	}
-	families := map[int64]int{}
-	for _, r := range refs {
-		families[r.ParentID]++
-	}
-	if _, err := domain.Distribute(refs, rand.New(rand.NewSource(1))); err != nil {
-		b.send(tgID, fmt.Sprintf("Семей: %d, детей: %d.\n❗ Распределить нельзя: %v", len(families), len(refs), err), nil)
+	if !p.Possible {
+		b.send(tgID, fmt.Sprintf("Семей: %d, детей: %d.\n❗ %s", p.Families, p.Children, esc(p.Reason)), nil)
 		return nil
 	}
 	b.send(tgID, fmt.Sprintf(
 		"Семей: %d, детей: %d.\nКаждая семья дарит столько подарков, сколько детей привела, и не дарит своим.\n\nПосле подтверждения распределение не изменить, всем участникам придут карточки.",
-		len(families), len(refs)),
-		inlineButtons(button("✅ Распределить", "dist", ex.ID)))
-	return nil
-}
-
-func (b *Bot) confirmDistribution(ctx context.Context, tgID int64) error {
-	ex, err := b.store.CurrentExchange(ctx)
-	if err != nil {
-		return err
-	}
-	rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
-	n, err := b.store.Distribute(ctx, ex.ID, func(refs []domain.ChildRef) ([]domain.Pair, error) {
-		return domain.Distribute(refs, rnd)
-	})
-	if err != nil {
-		b.send(tgID, "Распределение не выполнено: "+esc(err.Error()), nil)
-		return nil
-	}
-
-	list, err := b.store.AssignmentsByExchange(ctx, ex.ID)
-	if err != nil {
-		return err
-	}
-	b.notifyDistribution(list)
-	b.notifyAdmins(fmt.Sprintf("✅ Распределение готово: %d подарков. Участникам отправлены карточки.", n))
+		p.Families, p.Children),
+		inlineButtons(button("✅ Распределить", "dist", 0)))
 	return nil
 }
 
 func (b *Bot) notifyDistribution(list []store.Assignment) {
 	byGiver := map[int64][]store.Assignment{}
-	parents := map[int64]store.User{}
+	parents := map[int64]bool{}
 	var order []int64
 	for _, a := range list {
 		if _, seen := byGiver[a.Giver.TgID]; !seen {
 			order = append(order, a.Giver.TgID)
 		}
 		byGiver[a.Giver.TgID] = append(byGiver[a.Giver.TgID], a)
-		parents[a.Parent.TgID] = a.Parent
+		parents[a.Parent.TgID] = true
 	}
 	for _, giverTg := range order {
 		items := byGiver[giverTg]
@@ -222,7 +393,7 @@ func (b *Bot) adminStatus(ctx context.Context, tgID int64) error {
 		return err
 	}
 	if len(list) == 0 {
-		b.send(tgID, fmt.Sprintf("Обмен #%d, статус %s. Распределения ещё нет.", ex.ID, ex.Status), nil)
+		b.send(tgID, fmt.Sprintf("Обмен #%d: %s. Распределения ещё нет.", ex.ID, StatusTitle(ex.Status)), nil)
 		return nil
 	}
 
@@ -242,8 +413,8 @@ func (b *Bot) adminStatus(ctx context.Context, tgID int64) error {
 			a.ChildID, esc(a.ChildFirstName), esc(a.ChildLastName),
 			a.Giver.ID, esc(a.Giver.FirstName), esc(a.Giver.LastName), usernameSuffix(a.Giver), b.statusText(a), extra)
 	}
-	header := fmt.Sprintf("<b>Обмен #%d, статус %s</b>\nВсего: %d. Не заказано: %d, заказано: %d, в ПВЗ: %d, получено: %d.\n\n",
-		ex.ID, ex.Status, len(list),
+	header := fmt.Sprintf("<b>Обмен #%d: %s</b>\nВсего: %d. Не заказано: %d, заказано: %d, в ПВЗ: %d, получено: %d.\n\n",
+		ex.ID, StatusTitle(ex.Status), len(list),
 		counts[domain.AssignmentAssigned], counts[domain.AssignmentOrdered], counts[domain.AssignmentArrived], counts[domain.AssignmentReceived])
 	if sb.Len() == 0 {
 		sb.WriteString("Все подарки получены 🎉")
@@ -259,110 +430,65 @@ func usernameSuffix(u store.User) string {
 	return " @" + esc(u.TgUsername)
 }
 
-func (b *Bot) adminRemind(ctx context.Context, tgID int64) error {
-	ex, err := b.store.CurrentExchange(ctx)
-	if err != nil {
-		return err
-	}
-	if ex.Status != domain.ExchangeDistributed {
-		b.send(tgID, "Напоминания работают только после распределения.", nil)
-		return nil
-	}
-	list, err := b.store.AssignmentsByExchange(ctx, ex.ID)
-	if err != nil {
-		return err
-	}
-	sent := 0
-	now := b.now()
-	for _, a := range list {
-		st := a.PickupState()
-		switch {
-		case a.Status == domain.AssignmentAssigned:
-			b.sendReminder(domain.RemindGiverOrder, a)
-		case a.Status == domain.AssignmentArrived && st.CodeRequestPending():
-			b.sendReminder(domain.RemindGiverCodePending, a)
-		case a.Status == domain.AssignmentArrived && !st.CodeValid(now):
-			b.sendReminder(domain.RemindRecipientPickup, a)
-		default:
-			continue
-		}
-		sent++
-	}
-	b.send(tgID, fmt.Sprintf("Отправлено напоминаний: %d.", sent), nil)
-	return nil
-}
-
 func (b *Bot) adminReassign(ctx context.Context, tgID int64, args string) error {
 	fields := strings.Fields(args)
 	if len(fields) != 2 {
-		b.send(tgID, "Формат: /reassign &lt;child_id&gt; &lt;user_id&gt;. ID есть в /status и /families.", nil)
-		return nil
+		return refuse("Формат: /reassign <child_id> <user_id>. ID есть в /status и /families.")
 	}
 	childID, err1 := strconv.ParseInt(fields[0], 10, 64)
 	giverID, err2 := strconv.ParseInt(fields[1], 10, 64)
 	if err1 != nil || err2 != nil {
-		b.send(tgID, "child_id и user_id должны быть числами.", nil)
-		return nil
+		return refuse("child_id и user_id должны быть числами.")
 	}
-	ex, err := b.store.CurrentExchange(ctx)
-	if err != nil {
+	if err := b.Reassign(ctx, childID, giverID); err != nil {
 		return err
 	}
-	if _, err := b.store.UserByID(ctx, giverID); errors.Is(err, store.ErrNotFound) {
-		b.send(tgID, "Нет участника с таким user_id.", nil)
-		return nil
-	} else if err != nil {
-		return err
-	}
-
-	var old *store.Assignment
-	list, err := b.store.AssignmentsByExchange(ctx, ex.ID)
-	if err != nil {
-		return err
-	}
-	for i := range list {
-		if list[i].ChildID == childID {
-			old = &list[i]
-			break
-		}
-	}
-	if old == nil {
-		b.send(tgID, "Ребёнок не найден в распределении.", nil)
-		return nil
-	}
-
-	ok, err := b.store.Reassign(ctx, ex.ID, childID, giverID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		b.send(tgID, "Нельзя: подарок уже получен или новый даритель — родитель этого ребёнка.", nil)
-		return nil
-	}
-	updated, err := b.store.Assignment(ctx, old.ID)
-	if err != nil {
-		return err
-	}
-	if old.Giver.ID != giverID {
-		b.send(old.Giver.TgID, fmt.Sprintf("Организатор передал подарок для %s другому участнику. Спасибо!", esc(old.ChildFirstName)), nil)
-	}
-	b.sendGiverCard(updated, "🎁 Организатор добавил тебе ещё одного ребёнка:")
 	b.send(tgID, "Готово, новый даритель получил карточку.", nil)
 	return nil
 }
 
-func (b *Bot) adminBroadcast(ctx context.Context, tgID int64, text string) error {
-	if text == "" {
-		b.send(tgID, "Формат: /broadcast текст сообщения", nil)
-		return nil
+// ---------- admin panel entry points ----------
+
+// tgbotapi v5.5.1 predates Web Apps, so these two calls go through raw requests.
+
+// SetupAdminMenuButtons puts the panel button next to the input field in each admin's chat.
+func (b *Bot) SetupAdminMenuButtons() {
+	if b.cfg.WebAppURL == "" {
+		return
 	}
-	ids, err := b.store.AllUserTgIDs(ctx)
-	if err != nil {
-		return err
+	menu, _ := json.Marshal(map[string]any{
+		"type":    "web_app",
+		"text":    "Панель",
+		"web_app": map[string]string{"url": b.cfg.WebAppURL},
+	})
+	for _, id := range b.cfg.AdminIDs {
+		params := tgbotapi.Params{"chat_id": strconv.FormatInt(id, 10), "menu_button": string(menu)}
+		if _, err := b.api.MakeRequest("setChatMenuButton", params); err != nil {
+			// Fails until the admin opens the bot at least once; /admin retries.
+			continue
+		}
 	}
-	for _, id := range ids {
-		b.send(id, "📣 "+esc(text), nil)
+}
+
+func (b *Bot) sendAdminPanelButton(chatID int64, text string) {
+	if b.cfg.WebAppURL == "" {
+		b.send(chatID, text, nil)
+		return
 	}
-	b.send(tgID, fmt.Sprintf("Отправлено %d участникам.", len(ids)), nil)
-	return nil
+	b.SetupAdminMenuButtons()
+	markup, _ := json.Marshal(map[string]any{
+		"inline_keyboard": [][]map[string]any{{{
+			"text":    "🛠 Открыть панель",
+			"web_app": map[string]string{"url": b.cfg.WebAppURL},
+		}}},
+	})
+	params := tgbotapi.Params{
+		"chat_id":      strconv.FormatInt(chatID, 10),
+		"text":         text,
+		"parse_mode":   tgbotapi.ModeHTML,
+		"reply_markup": string(markup),
+	}
+	if _, err := b.api.MakeRequest("sendMessage", params); err != nil {
+		b.send(chatID, text, nil)
+	}
 }

@@ -28,6 +28,16 @@ The scheduler checks assignments every `SCHEDULER_INTERVAL`. Every kind of remin
 | Code expires today | recipient | valid code, after `EVENING_HOUR` |
 | Parcel is stuck | admins | arrived more than `STUCK_AFTER` ago |
 
+## Admin panel
+
+Organizers manage the exchange from a Telegram Mini App: the «Панель» menu button in their chat with the bot, or `/admin`.
+
+- Overview: current stage with the next action (open or close registration, distribute, remind, finish), invite link, conditions, message to everyone.
+- Families: every registered adult with phone, username, ПВЗ and children; users who registered without children are listed separately.
+- Gifts: every assignment with status, giver and recipient, filters, and «Передать другому дарителю».
+
+The bot serves the panel and its API on `HTTP_ADDR` when `WEBAPP_URL` is set. Every API call carries Telegram `initData`; the server checks its HMAC signature with the bot token, rejects data older than 24 hours and lets through only ids from `ADMIN_IDS`. Panel actions go through the same code as the chat commands, so participants get the same Telegram notifications.
+
 ## Admin commands
 
 Commands are hidden from the menu and work only for ids from `ADMIN_IDS`. `/admin` prints the list: `/invite`, `/open`, `/close`, `/families`, `/distribute`, `/status`, `/remind`, `/reassign <child_id> <user_id>`, `/broadcast <text>`, `/finish`, `/new_exchange`.

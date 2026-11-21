@@ -193,6 +193,24 @@ func (s *Store) Participants(ctx context.Context, exchangeID int64) ([]Participa
 	return out, rows.Err()
 }
 
+func (s *Store) Users(ctx context.Context) ([]User, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, tg_id, tg_username, first_name, last_name, phone, pvz_address FROM users ORDER BY last_name, first_name`)
+	if err != nil {
+		return nil, fmt.Errorf("users: %w", err)
+	}
+	defer rows.Close()
+	var out []User
+	for rows.Next() {
+		var u User
+		if err := rows.Scan(&u.ID, &u.TgID, &u.TgUsername, &u.FirstName, &u.LastName, &u.Phone, &u.PVZAddress); err != nil {
+			return nil, fmt.Errorf("scan user: %w", err)
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) AllUserTgIDs(ctx context.Context) ([]int64, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT tg_id FROM users ORDER BY id`)
 	if err != nil {
@@ -253,6 +271,26 @@ func (s *Store) ChildrenOf(ctx context.Context, exchangeID, parentID int64) ([]C
 		FROM children WHERE exchange_id = ? AND parent_user_id = ? ORDER BY id`, exchangeID, parentID)
 	if err != nil {
 		return nil, fmt.Errorf("children of: %w", err)
+	}
+	defer rows.Close()
+	var out []Child
+	for rows.Next() {
+		var c Child
+		if err := rows.Scan(&c.ID, &c.ParentID, &c.FirstName, &c.LastName, &c.Age, &c.Gender, &c.Wishes); err != nil {
+			return nil, fmt.Errorf("scan child: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// ExchangeChildren lists all children of the exchange ordered by parent.
+func (s *Store) ExchangeChildren(ctx context.Context, exchangeID int64) ([]Child, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, parent_user_id, first_name, last_name, age, gender, wishes
+		FROM children WHERE exchange_id = ? ORDER BY parent_user_id, id`, exchangeID)
+	if err != nil {
+		return nil, fmt.Errorf("exchange children: %w", err)
 	}
 	defer rows.Close()
 	var out []Child

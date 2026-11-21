@@ -13,6 +13,10 @@ type Config struct {
 	AdminIDs      []int64
 	InviteCode    string
 
+	// WebAppURL is the public HTTPS address of the admin panel; empty disables the HTTP server.
+	WebAppURL string
+	HTTPAddr  string
+
 	DB DB
 
 	Location       *time.Location
@@ -76,6 +80,8 @@ func Load() (Config, error) {
 	cfg := Config{
 		TelegramToken: str("TELEGRAM_BOT_TOKEN", ""),
 		InviteCode:    str("INVITE_CODE", ""),
+		WebAppURL:     strings.TrimRight(str("WEBAPP_URL", ""), "/"),
+		HTTPAddr:      str("HTTP_ADDR", "127.0.0.1:18090"),
 		DB: DB{
 			Host:     str("DB_HOST", "127.0.0.1"),
 			Port:     num("DB_PORT", 3306),
@@ -95,6 +101,9 @@ func Load() (Config, error) {
 		SchedulerEvery:   dur("SCHEDULER_INTERVAL", 10*time.Minute),
 	}
 
+	if cfg.WebAppURL != "" && !strings.HasPrefix(cfg.WebAppURL, "https://") {
+		errs = append(errs, "WEBAPP_URL must start with https://")
+	}
 	if cfg.TelegramToken == "" {
 		errs = append(errs, "TELEGRAM_BOT_TOKEN is required")
 	}

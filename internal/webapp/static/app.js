@@ -225,12 +225,50 @@ function statBox(n, label) {
   return h("div", { class: "stat" }, h("b", null, n || 0), h("span", { class: "muted" }, label));
 }
 
+function inviteText() {
+  const s = state.settings;
+  const lines = [
+    "Приглашаем детей в новогодний обмен подарками 🎁",
+    "Каждая семья дарит подарки детям из других семей: бот подскажет, кому и на какой ПВЗ Wildberries заказать. Бюджет подарка " + s.budget + ".",
+  ];
+  if (s.order_deadline) lines.push("Заказать подарок нужно до " + s.order_deadline + ", все подарки дети получат до " + s.delivery_by + ".");
+  lines.push("Чтобы участвовать, откройте бота по ссылке и зарегистрируйтесь:");
+  return lines.join("\n");
+}
+
+// shareInvite opens Telegram's own chat picker: the admin chooses contacts or groups and the message goes from their account.
+// The bot cannot message people who never started it, so this is the only way to reach new parents.
+function shareInvite(text) {
+  const link = "https://t.me/share/url?url=" + encodeURIComponent(state.invite) + "&text=" + encodeURIComponent(text);
+  if (tg && tg.openTelegramLink) tg.openTelegramLink(link);
+  else window.open(link, "_blank");
+}
+
 function inviteCard() {
-  if (state.exchange.status !== "registration_open" && state.exchange.status !== "draft") return null;
+  const status = state.exchange.status;
+  if (status !== "registration_open" && status !== "draft") return null;
+  if (status === "draft") {
+    return h("div", { class: "card" },
+      h("h3", null, "Приглашение"),
+      h("div", { class: "muted" }, "Откройте регистрацию, чтобы отправлять приглашения: до этого бот не пустит новых участников."),
+    );
+  }
+  const text = h("textarea", null, inviteText());
   const input = h("input", { value: state.invite, readonly: true });
   return h("div", { class: "card" },
-    h("h3", null, "Ссылка-приглашение"),
-    input,
+    h("h3", null, "Приглашение"),
+    h("div", { class: "muted" }, "Текст можно поправить. Ссылка добавится к сообщению автоматически."),
+    h("div", { class: "line" }, text),
+    h("button", {
+      class: "btn", type: "button",
+      onclick: () => {
+        const value = text.value.trim();
+        if (!value) return toast("Введите текст приглашения", true);
+        shareInvite(value);
+      },
+    }, "Отправить приглашение"),
+    h("div", { class: "muted line" }, "Откроется выбор чатов Telegram: можно отметить несколько контактов или родительский чат."),
+    h("div", { class: "line" }, input),
     h("button", {
       class: "btn small secondary", type: "button",
       onclick: async () => {
@@ -242,7 +280,7 @@ function inviteCard() {
           toast("Выделите ссылку и скопируйте");
         }
       },
-    }, "Скопировать"),
+    }, "Скопировать только ссылку"),
   );
 }
 

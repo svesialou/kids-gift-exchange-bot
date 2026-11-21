@@ -39,7 +39,7 @@ func (b *Bot) defaultSettings() Settings {
 func (b *Bot) EffectiveSettings(ex store.Exchange) Settings {
 	s := b.defaultSettings()
 	s.Title = ex.Title
-	if s.Title == "" {
+	if s.Title == "" && ex.ID != 0 {
 		s.Title = fmt.Sprintf("Обмен #%d", ex.ID)
 	}
 	if ex.BudgetMax != nil {
@@ -115,6 +115,8 @@ func (b *Bot) UpdateSettings(ctx context.Context, s Settings) error {
 		return err
 	}
 	switch ex.Status {
+	case domain.ExchangeNone:
+		return refuse("Обмена ещё нет, сначала создайте его.")
 	case domain.ExchangeCompleted:
 		return refuse("Обмен завершён, его условия больше не меняются.")
 	case domain.ExchangeClosed, domain.ExchangeDistributed:
@@ -139,8 +141,8 @@ func (b *Bot) NewExchange(ctx context.Context, s Settings) error {
 	if err != nil {
 		return err
 	}
-	if ex.Status != domain.ExchangeCompleted {
-		return refuse("Новый обмен можно создать только после завершения текущего.")
+	if ex.Status != domain.ExchangeCompleted && ex.Status != domain.ExchangeNone {
+		return refuse("Новый обмен можно создать только после завершения или удаления текущего.")
 	}
 	if _, err := b.store.CreateExchange(ctx, toSchedule(s)); err != nil {
 		return err

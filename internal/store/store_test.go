@@ -51,12 +51,7 @@ func TestExchangeLifecycle(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 
-	ex, err := st.CurrentExchange(ctx)
-	if err != nil || ex.Status != domain.ExchangeDraft {
-		t.Fatalf("want draft exchange, got %+v %v", ex, err)
-	}
-	ok, err := st.TransitionExchange(ctx, ex.ID, domain.ExchangeOpen, domain.ExchangeDraft, domain.ExchangeClosed)
-	mustTrue(t, ok, err, "open registration")
+	ex := openExchange(t, st)
 
 	a, b, c := mustUser(t, st, 1), mustUser(t, st, 2), mustUser(t, st, 3)
 	for _, u := range []store.User{a, a, b, c} {
@@ -66,7 +61,7 @@ func TestExchangeLifecycle(t *testing.T) {
 	}
 	kidsOfC, _ := st.ChildrenOf(ctx, ex.ID, c.ID)
 
-	ok, err = st.DeleteChild(ctx, ex.ID, a.ID, kidsOfC[0].ID)
+	ok, err := st.DeleteChild(ctx, ex.ID, a.ID, kidsOfC[0].ID)
 	mustFalse(t, ok, err, "delete someone else's child")
 
 	ok, err = st.TransitionExchange(ctx, ex.ID, domain.ExchangeClosed, domain.ExchangeOpen)
@@ -157,12 +152,8 @@ func TestExchangeLifecycle(t *testing.T) {
 func TestExchangeScheduleAndHistory(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
-	first, err := st.CurrentExchange(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.BudgetMax != nil || first.RegistrationOpensAt != nil {
-		t.Fatalf("first exchange must have no saved settings: %+v", first)
+	if cur, err := st.CurrentExchange(ctx); err != nil || cur.ID != 0 || cur.Status != domain.ExchangeNone {
+		t.Fatalf("empty database must have no exchange: %+v %v", cur, err)
 	}
 
 	opens := time.Date(2026, 11, 25, 7, 0, 0, 0, time.UTC)
@@ -170,18 +161,23 @@ func TestExchangeScheduleAndHistory(t *testing.T) {
 	sch := store.ExchangeSchedule{Title: "Новый год", BudgetMax: 30, Currency: "BYN", RegistrationOpensAt: &opens, RegistrationClosesAt: &closes,
 		OrderDeadline: time.Date(2026, 12, 13, 0, 0, 0, 0, time.UTC), DeliveryDeadline: time.Date(2026, 12, 25, 0, 0, 0, 0, time.UTC)}
 
+	firstID, err := st.CreateExchange(ctx, sch)
+	if err != nil {
+		t.Fatalf("the first exchange must be creatable: %v", err)
+	}
 	if _, err := st.CreateExchange(ctx, sch); err == nil {
 		t.Fatal("a new exchange must not start while the current one is not completed")
 	}
-	if err := st.SaveExchangeSchedule(ctx, first.ID, sch); err != nil {
+	sch.Title, sch.BudgetMax = "Новый год 2026", 35
+	if err := st.SaveExchangeSchedule(ctx, firstID, sch); err != nil {
 		t.Fatal(err)
 	}
-	got, err := st.ExchangeByID(ctx, first.ID)
-	if err != nil || got.Title != "Новый год" || *got.BudgetMax != 30 || !got.RegistrationOpensAt.Equal(opens) || !got.RegistrationClosesAt.Equal(closes) {
+	got, err := st.ExchangeByID(ctx, firstID)
+	if err != nil || got.Title != "Новый год 2026" || *got.BudgetMax != 35 || !got.RegistrationOpensAt.Equal(opens) || !got.RegistrationClosesAt.Equal(closes) {
 		t.Fatalf("schedule not read back: %+v %v", got, err)
 	}
 
-	ok, err := st.TransitionExchange(ctx, first.ID, domain.ExchangeCompleted, domain.ExchangeDraft)
+	ok, err := st.TransitionExchange(ctx, firstID, domain.ExchangeCompleted, domain.ExchangeDraft)
 	mustTrue(t, ok, err, "complete first exchange")
 	secondID, err := st.CreateExchange(ctx, sch)
 	if err != nil {
@@ -198,8 +194,7 @@ func TestViolationsAndBans(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
 	now := time.Now()
-	ex, _ := st.CurrentExchange(ctx)
-	_, _ = st.TransitionExchange(ctx, ex.ID, domain.ExchangeOpen, domain.ExchangeDraft)
+	ex := openExchange(t, st)
 
 	a, b, c, banned := mustUser(t, st, 1), mustUser(t, st, 2), mustUser(t, st, 3), mustUser(t, st, 4)
 	for _, u := range []store.User{a, b, c, banned} {
@@ -267,6 +262,58 @@ func TestViolationsAndBans(t *testing.T) {
 	if u.BannedAt != nil || u.BanReason != "" {
 		t.Fatalf("unban did not clear: %+v", u)
 	}
+}
+
+func TestDeleteDistributedExchange(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+	ex := openExchange(t, st)
+	for i := 1; i <= 3; i++ {
+		u := mustUser(t, st, int64(i))
+		if err := st.AddChild(ctx, ex.ID, store.Child{ParentID: u.ID, FirstName: "Kid", LastName: "L", Age: 5, Gender: "boy"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, _ = st.TransitionExchange(ctx, ex.ID, domain.ExchangeClosed, domain.ExchangeOpen)
+	if _, err := st.Distribute(ctx, ex.ID, func(r []domain.ChildRef) ([]domain.Pair, error) {
+		return domain.Distribute(r, rand.New(rand.NewSource(1)))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := st.AssignmentsByExchange(ctx, ex.ID)
+	if _, err := st.MarkReminderSent(ctx, list[0].ID, domain.RemindGiverOrder, "2026-12-01"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.RecordOrderViolations(ctx, ex.ID, now); err != nil {
+		t.Fatal(err)
+	}
+
+	ok, err := st.DeleteExchange(ctx, ex.ID)
+	mustTrue(t, ok, err, "delete distributed exchange")
+	if a, _ := st.AssignmentsByExchange(ctx, ex.ID); len(a) != 0 {
+		t.Fatalf("assignments left: %d", len(a))
+	}
+	if v, _ := st.ViolationsByExchange(ctx, ex.ID); len(v) != 0 {
+		t.Fatalf("violations left: %d", len(v))
+	}
+	if cur, _ := st.CurrentExchange(ctx); cur.ID != 0 {
+		t.Fatalf("no exchange must remain, got %d", cur.ID)
+	}
+}
+
+func openExchange(t *testing.T, st *store.Store) store.Exchange {
+	t.Helper()
+	ctx := context.Background()
+	id, err := st.CreateExchange(ctx, store.ExchangeSchedule{Title: "t", BudgetMax: 25, Currency: "BYN",
+		OrderDeadline: time.Date(2026, 12, 13, 0, 0, 0, 0, time.UTC), DeliveryDeadline: time.Date(2026, 12, 25, 0, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, err := st.TransitionExchange(ctx, id, domain.ExchangeOpen, domain.ExchangeDraft)
+	mustTrue(t, ok, err, "open")
+	ex, _ := st.ExchangeByID(ctx, id)
+	return ex
 }
 
 func TestSessionRoundTrip(t *testing.T) {

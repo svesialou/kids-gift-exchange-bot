@@ -35,7 +35,9 @@ type Admin interface {
 	InviteLink() string
 	EffectiveSettings(ex store.Exchange) bot.Settings
 	UpdateSettings(ctx context.Context, s bot.Settings) error
-	SetBanned(ctx context.Context, userID int64, banned bool, reason string) error
+	SetBanned(ctx context.Context, userIDs []int64, banned bool, reason string) (int, error)
+	SendMessage(ctx context.Context, userIDs []int64, text string) (int, error)
+	DeleteExchange(ctx context.Context, id int64, notify bool) error
 	AddViolation(ctx context.Context, exchangeID, userID int64, comment string) error
 	SetViolationDismissed(ctx context.Context, id int64, dismissed bool) error
 }
@@ -66,7 +68,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/broadcast", s.auth(s.handleBroadcast))
 	mux.Handle("GET /api/users", s.auth(s.handleUsers))
 	mux.Handle("GET /api/users/{id}", s.auth(s.handleUser))
-	mux.Handle("POST /api/users/{id}/ban", s.auth(s.handleBan))
+	mux.Handle("POST /api/users/ban", s.auth(s.handleBan))
+	mux.Handle("POST /api/messages", s.auth(s.handleMessage))
+	mux.Handle("POST /api/exchanges/{id}/delete", s.auth(s.handleDeleteExchange))
 	mux.Handle("POST /api/violations", s.auth(s.handleAddViolation))
 	mux.Handle("POST /api/violations/{id}/dismiss", s.auth(s.handleDismissViolation))
 	return securityHeaders(mux)

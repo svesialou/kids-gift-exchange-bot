@@ -3,6 +3,7 @@ package webapp
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/svesialou/kids-gift-exchange-bot/internal/store"
@@ -137,22 +138,32 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleBan(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(w, r)
-	if !ok {
-		return
-	}
 	var req struct {
-		Banned bool   `json:"banned"`
-		Reason string `json:"reason"`
+		UserIDs []int64 `json:"user_ids"`
+		Banned  bool    `json:"banned"`
+		Reason  string  `json:"reason"`
 	}
 	if !readJSON(w, r, &req) {
 		return
 	}
-	msg := "Пользователь разблокирован."
+	n, err := s.admin.SetBanned(r.Context(), req.UserIDs, req.Banned, req.Reason)
+	msg := "Разблокировано: " + strconv.Itoa(n) + "."
 	if req.Banned {
-		msg = "Пользователь заблокирован: не сможет добавлять детей и не попадёт в распределение."
+		msg = "Заблокировано: " + strconv.Itoa(n) + ". Они не смогут добавлять детей и не попадут в распределение."
 	}
-	s.reply(w, msg, s.admin.SetBanned(r.Context(), id, req.Banned, req.Reason))
+	s.reply(w, msg, err)
+}
+
+func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UserIDs []int64 `json:"user_ids"`
+		Text    string  `json:"text"`
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	n, err := s.admin.SendMessage(r.Context(), req.UserIDs, req.Text)
+	s.reply(w, "Отправлено: "+strconv.Itoa(n)+".", err)
 }
 
 func (s *Server) handleAddViolation(w http.ResponseWriter, r *http.Request) {

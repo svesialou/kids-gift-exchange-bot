@@ -41,23 +41,28 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
-func (s *Store) Migrate() error {
+// Migrate applies pending migrations and returns the resulting schema version.
+func (s *Store) Migrate() (uint, error) {
 	src, err := iofs.New(migrationsFS, "migrations")
 	if err != nil {
-		return fmt.Errorf("migrations source: %w", err)
+		return 0, fmt.Errorf("migrations source: %w", err)
 	}
 	driver, err := migratemysql.WithInstance(s.db, &migratemysql.Config{})
 	if err != nil {
-		return fmt.Errorf("migrations driver: %w", err)
+		return 0, fmt.Errorf("migrations driver: %w", err)
 	}
 	m, err := migrate.NewWithInstance("iofs", src, "mysql", driver)
 	if err != nil {
-		return fmt.Errorf("migrations init: %w", err)
+		return 0, fmt.Errorf("migrations init: %w", err)
 	}
 	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		return fmt.Errorf("migrations up: %w", err)
+		return 0, fmt.Errorf("migrations up: %w", err)
 	}
-	return nil
+	version, _, err := m.Version()
+	if err != nil {
+		return 0, fmt.Errorf("migrations version: %w", err)
+	}
+	return version, nil
 }
 
 // ---------- exchanges ----------

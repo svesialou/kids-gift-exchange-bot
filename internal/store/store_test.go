@@ -40,7 +40,7 @@ func newTestStore(t *testing.T) *Store {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	if err := st.Migrate(); err != nil {
+	if _, err := st.Migrate(); err != nil {
 		t.Fatal(err)
 	}
 	return st

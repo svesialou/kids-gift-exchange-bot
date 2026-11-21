@@ -16,19 +16,21 @@ func TestDeleteExchangeMessagesAndBans(t *testing.T) {
 	st := storetest.New(t)
 	ctx := context.Background()
 	api, tg := newFakeTelegram(t)
-	b := New(api, st, config.Config{Location: time.UTC, AdminIDs: []int64{900}, GiftBudgetMax: 25, GiftCurrency: "BYN"})
+	b := New(api, st, config.Config{Location: time.UTC, AdminIDs: []int64{900}})
+	clock := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
+	b.now = func() time.Time { return clock }
 
-	if ex, _ := st.CurrentExchange(ctx); ex.ID != 0 || ex.Status != domain.ExchangeNone {
+	if ex, _ := st.ActiveExchange(ctx); ex.ID != 0 || ex.Status != domain.ExchangeNone {
 		t.Fatalf("empty database must have no exchange, got %+v", ex)
 	}
-	day := func(d int) time.Time { return time.Date(2026, 12, d, 0, 0, 0, 0, time.UTC) }
-	if err := b.NewExchange(ctx, Settings{Title: "Новый год", BudgetMax: 25, Currency: "BYN", OrderDeadline: day(13), DeliveryBy: day(25)}); err != nil {
+	id, err := b.NewExchange(ctx, testSettings("Новый год"))
+	if err != nil {
 		t.Fatalf("first exchange must be creatable: %v", err)
 	}
-	ex, _ := st.CurrentExchange(ctx)
-	if _, err := b.ChangeExchangeStatus(ctx, "open"); err != nil {
+	if _, err := b.ChangeExchangeStatus(ctx, id, "open"); err != nil {
 		t.Fatal(err)
 	}
+	ex, _ := st.ExchangeByID(ctx, id)
 
 	var ids []int64
 	for i := 0; i < 3; i++ {
@@ -59,8 +61,12 @@ func TestDeleteExchangeMessagesAndBans(t *testing.T) {
 		t.Fatalf("bulk unban: %d %v", n, err)
 	}
 
-	if err := b.NewExchange(ctx, Settings{Title: "Ещё", BudgetMax: 25, Currency: "BYN", OrderDeadline: day(13), DeliveryBy: day(25)}); err == nil {
-		t.Fatal("a second exchange must not start while the first one runs")
+	secondID, err := b.NewExchange(ctx, testSettings("Ещё один"))
+	if err != nil {
+		t.Fatalf("a second exchange can be planned while the first runs: %v", err)
+	}
+	if _, err := b.ChangeExchangeStatus(ctx, secondID, "open"); err == nil {
+		t.Fatal("a second exchange must not open while the first one runs")
 	}
 
 	if err := b.DeleteExchange(ctx, ex.ID, true); err != nil {
@@ -72,8 +78,11 @@ func TestDeleteExchangeMessagesAndBans(t *testing.T) {
 	if strings.Contains(tg.textsTo("102"), "отменён") {
 		t.Fatal("users without children in the exchange must not be notified")
 	}
-	if cur, _ := st.CurrentExchange(ctx); cur.ID != 0 {
-		t.Fatalf("after deleting the only exchange there must be none, got %+v", cur)
+	if cur, _ := st.ActiveExchange(ctx); cur.ID != 0 {
+		t.Fatalf("after deleting the running exchange none is active, got %+v", cur)
+	}
+	if _, err := b.ChangeExchangeStatus(ctx, secondID, "open"); err != nil {
+		t.Fatalf("the planned exchange can open once the running one is gone: %v", err)
 	}
 	if kids, _ := st.ExchangeChildren(ctx, ex.ID); len(kids) != 0 {
 		t.Fatalf("children of a deleted exchange must be gone, got %d", len(kids))
@@ -84,4 +93,12 @@ func TestDeleteExchangeMessagesAndBans(t *testing.T) {
 	if err := b.DeleteExchange(ctx, ex.ID, false); err == nil {
 		t.Fatal("deleting a missing exchange must be refused")
 	}
+}
+
+// testSettings has a registration window around 2026-11-26 12:00 UTC.
+func testSettings(title string) Settings {
+	opens := time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC)
+	closes := time.Date(2026, 12, 5, 20, 0, 0, 0, time.UTC)
+	return Settings{Title: title, BudgetMax: 25, Currency: "BYN", RegistrationOpensAt: &opens, RegistrationClosesAt: &closes,
+		OrderDeadline: time.Date(2026, 12, 13, 0, 0, 0, 0, time.UTC), DeliveryBy: time.Date(2026, 12, 25, 0, 0, 0, 0, time.UTC)}
 }

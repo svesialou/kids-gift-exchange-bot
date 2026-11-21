@@ -20,15 +20,15 @@ import (
 
 type fakeAdmin struct{ actions []string }
 
-func (f *fakeAdmin) ChangeExchangeStatus(_ context.Context, action string) (domain.ExchangeStatus, error) {
+func (f *fakeAdmin) ChangeExchangeStatus(_ context.Context, _ int64, action string) (domain.ExchangeStatus, error) {
 	f.actions = append(f.actions, action)
 	return "", &bot.ActionError{Msg: "Нельзя: сейчас «черновик»."}
 }
-func (f *fakeAdmin) NewExchange(context.Context, bot.Settings) error { return nil }
-func (f *fakeAdmin) PreviewDistribution(context.Context) (bot.DistributionPreview, error) {
+func (f *fakeAdmin) NewExchange(context.Context, bot.Settings) (int64, error) { return 1, nil }
+func (f *fakeAdmin) PreviewDistribution(context.Context, int64) (bot.DistributionPreview, error) {
 	return bot.DistributionPreview{Families: 1, Children: 2}, nil
 }
-func (f *fakeAdmin) Distribute(context.Context) (int, error)        { return 0, nil }
+func (f *fakeAdmin) Distribute(context.Context, int64) (int, error) { return 0, nil }
 func (f *fakeAdmin) RemindNow(context.Context) (int, error)         { return 0, nil }
 func (f *fakeAdmin) Reassign(context.Context, int64, int64) error   { return nil }
 func (f *fakeAdmin) Broadcast(context.Context, string) (int, error) { return 0, nil }
@@ -40,7 +40,7 @@ func (f *fakeAdmin) SendMessage(context.Context, []int64, string) (int, error)  
 func (f *fakeAdmin) DeleteExchange(context.Context, int64, bool) error             { return nil }
 func (f *fakeAdmin) AddViolation(context.Context, int64, int64, string) error      { return nil }
 func (f *fakeAdmin) SetViolationDismissed(context.Context, int64, bool) error      { return nil }
-func (f *fakeAdmin) UpdateSettings(context.Context, bot.Settings) error            { return nil }
+func (f *fakeAdmin) UpdateSettings(context.Context, int64, bot.Settings) error     { return nil }
 func (f *fakeAdmin) InviteLink() string                                            { return "https://t.me/test_bot?start=x" }
 
 func testStore(t *testing.T) *store.Store { return storetest.New(t) }
@@ -51,6 +51,9 @@ func TestPanelAccessAndState(t *testing.T) {
 	exID, err := st.CreateExchange(ctx, store.ExchangeSchedule{Title: "Новый год", BudgetMax: 25, Currency: "BYN",
 		OrderDeadline: time.Date(2026, 12, 13, 0, 0, 0, 0, time.UTC), DeliveryDeadline: time.Date(2026, 12, 25, 0, 0, 0, 0, time.UTC)})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.TransitionExchange(ctx, exID, domain.ExchangeOpen, domain.ExchangeDraft); err != nil {
 		t.Fatal(err)
 	}
 	ex, _ := st.ExchangeByID(ctx, exID)
@@ -65,7 +68,7 @@ func TestPanelAccessAndState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := config.Config{Location: time.UTC, TelegramToken: testToken, AdminIDs: []int64{42}, GiftBudgetMax: 25, GiftCurrency: "BYN", StuckAfter: 96 * time.Hour}
+	cfg := config.Config{Location: time.UTC, TelegramToken: testToken, AdminIDs: []int64{42}, StuckAfter: 96 * time.Hour}
 	admin := &fakeAdmin{}
 	srv := httptest.NewServer(New(cfg, st, admin).Handler())
 	defer srv.Close()
@@ -91,17 +94,17 @@ func TestPanelAccessAndState(t *testing.T) {
 		return res.StatusCode, out
 	}
 
-	if code, _ := do("GET", "/api/state", "", ""); code != http.StatusUnauthorized {
+	if code, _ := do("GET", "/api/exchanges/"+strconv.FormatInt(exID, 10), "", ""); code != http.StatusUnauthorized {
 		t.Fatalf("no init data: want 401, got %d", code)
 	}
-	if code, _ := do("GET", "/api/state", initData(7), ""); code != http.StatusForbidden {
+	if code, _ := do("GET", "/api/exchanges/"+strconv.FormatInt(exID, 10), initData(7), ""); code != http.StatusForbidden {
 		t.Fatalf("not an admin: want 403, got %d", code)
 	}
-	if code, _ := do("POST", "/api/action", initData(7), `{"action":"open"}`); code != http.StatusForbidden || len(admin.actions) != 0 {
+	if code, _ := do("POST", "/api/exchanges/"+strconv.FormatInt(exID, 10)+"/action", initData(7), `{"action":"open"}`); code != http.StatusForbidden || len(admin.actions) != 0 {
 		t.Fatalf("not an admin must not trigger actions: %d %v", code, admin.actions)
 	}
 
-	code, state := do("GET", "/api/state", initData(42), "")
+	code, state := do("GET", "/api/exchanges/"+strconv.FormatInt(exID, 10), initData(42), "")
 	if code != http.StatusOK {
 		t.Fatalf("admin state: want 200, got %d %v", code, state)
 	}
@@ -115,11 +118,11 @@ func TestPanelAccessAndState(t *testing.T) {
 		t.Fatalf("unexpected family: %v", fam)
 	}
 
-	code, body := do("POST", "/api/action", initData(42), `{"action":"open"}`)
+	code, body := do("POST", "/api/exchanges/"+strconv.FormatInt(exID, 10)+"/action", initData(42), `{"action":"open"}`)
 	if code != http.StatusConflict || body["error"] != "Нельзя: сейчас «черновик»." {
 		t.Fatalf("refusal must reach the admin: %d %v", code, body)
 	}
-	if code, _ := do("POST", "/api/action", initData(42), `{"action":"drop_tables"}`); code != http.StatusBadRequest {
+	if code, _ := do("POST", "/api/exchanges/"+strconv.FormatInt(exID, 10)+"/action", initData(42), `{"action":"drop_tables"}`); code != http.StatusBadRequest {
 		t.Fatalf("unknown action: want 400, got %d", code)
 	}
 
@@ -127,7 +130,7 @@ func TestPanelAccessAndState(t *testing.T) {
 	if code != http.StatusNotFound {
 		t.Fatalf("unknown exchange: want 404, got %d", code)
 	}
-	if code, _ := do("POST", "/api/settings", initData(42), `{"order_deadline":"13.12.2026","delivery_by":"2026-12-25"}`); code != http.StatusBadRequest {
+	if code, _ := do("POST", "/api/exchanges/"+strconv.FormatInt(exID, 10)+"/settings", initData(42), `{"order_deadline":"13.12.2026","delivery_by":"2026-12-25"}`); code != http.StatusBadRequest {
 		t.Fatalf("malformed date: want 400, got %d", code)
 	}
 	if code, _ := do("GET", "/api/users", initData(7), ""); code != http.StatusForbidden {

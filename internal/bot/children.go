@@ -22,7 +22,7 @@ const (
 )
 
 func (b *Bot) showChildren(ctx context.Context, user store.User) error {
-	ex, err := b.store.CurrentExchange(ctx)
+	ex, err := b.store.ActiveExchange(ctx)
 	if err != nil {
 		return err
 	}
@@ -58,7 +58,7 @@ func (b *Bot) showChildren(ctx context.Context, user store.User) error {
 }
 
 func (b *Bot) startChild(ctx context.Context, user store.User) error {
-	ex, err := b.store.CurrentExchange(ctx)
+	ex, err := b.store.ActiveExchange(ctx)
 	if err != nil {
 		return err
 	}
@@ -145,7 +145,7 @@ func (b *Bot) saveChild(ctx context.Context, tgID int64, sess store.Session, wis
 	if err != nil {
 		return err
 	}
-	ex, err := b.store.CurrentExchange(ctx)
+	ex, err := b.store.ActiveExchange(ctx)
 	if err != nil {
 		return err
 	}
@@ -169,7 +169,7 @@ func (b *Bot) saveChild(ctx context.Context, tgID int64, sess store.Session, wis
 }
 
 func (b *Bot) deleteChild(ctx context.Context, user store.User, childID int64) error {
-	ex, err := b.store.CurrentExchange(ctx)
+	ex, err := b.store.ActiveExchange(ctx)
 	if err != nil {
 		return err
 	}

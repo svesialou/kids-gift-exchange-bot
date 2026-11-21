@@ -1,7 +1,6 @@
 package bot
 
 import (
-	"context"
 	"errors"
 	"testing"
 	"time"
@@ -9,32 +8,42 @@ import (
 	"github.com/svesialou/kids-gift-exchange-bot/internal/config"
 )
 
-// Invalid settings must be refused before anything is written.
-func TestUpdateSettingsValidation(t *testing.T) {
+func TestValidateSettings(t *testing.T) {
 	b := &Bot{now: time.Now, cfg: config.Config{Location: time.UTC}}
-	day := func(d int) time.Time { return time.Date(2026, 12, d, 0, 0, 0, 0, time.UTC) }
+	day := func(d int) *time.Time { t := time.Date(2026, 12, d, 0, 0, 0, 0, time.UTC); return &t }
+	valid := func() Settings {
+		return Settings{Title: "Новый год", BudgetMax: 25, Currency: "BYN",
+			RegistrationOpensAt: day(1), RegistrationClosesAt: day(5), OrderDeadline: *day(13), DeliveryBy: *day(25)}
+	}
+	if s := valid(); b.validateSettings(&s) != nil {
+		t.Fatalf("baseline settings must be valid: %v", b.validateSettings(&s))
+	}
+
 	tests := []struct {
-		name string
-		s    Settings
+		name   string
+		mutate func(*Settings)
 	}{
-		{"zero budget", Settings{BudgetMax: 0, Currency: "BYN", OrderDeadline: day(13), DeliveryBy: day(25)}},
-		{"huge budget", Settings{BudgetMax: 100001, Currency: "BYN", OrderDeadline: day(13), DeliveryBy: day(25)}},
-		{"empty currency", Settings{BudgetMax: 25, Currency: "  ", OrderDeadline: day(13), DeliveryBy: day(25)}},
-		{"long currency", Settings{BudgetMax: 25, Currency: "белорусских", OrderDeadline: day(13), DeliveryBy: day(25)}},
-		{"no order date", Settings{BudgetMax: 25, Currency: "BYN", DeliveryBy: day(25)}},
-		{"order after delivery", Settings{BudgetMax: 25, Currency: "BYN", OrderDeadline: day(26), DeliveryBy: day(25)}},
-		{"only registration start", Settings{BudgetMax: 25, Currency: "BYN", OrderDeadline: day(13), DeliveryBy: day(25), RegistrationOpensAt: ptr(day(1))}},
-		{"registration closes before it opens", Settings{BudgetMax: 25, Currency: "BYN", OrderDeadline: day(13), DeliveryBy: day(25), RegistrationOpensAt: ptr(day(5)), RegistrationClosesAt: ptr(day(4))}},
-		{"registration closes after order deadline", Settings{BudgetMax: 25, Currency: "BYN", OrderDeadline: day(13), DeliveryBy: day(25), RegistrationOpensAt: ptr(day(1)), RegistrationClosesAt: ptr(day(14))}},
+		{"no title", func(s *Settings) { s.Title = "  " }},
+		{"zero budget", func(s *Settings) { s.BudgetMax = 0 }},
+		{"huge budget", func(s *Settings) { s.BudgetMax = 100001 }},
+		{"empty currency", func(s *Settings) { s.Currency = " " }},
+		{"long currency", func(s *Settings) { s.Currency = "белорусских" }},
+		{"no registration start", func(s *Settings) { s.RegistrationOpensAt = nil }},
+		{"no registration end", func(s *Settings) { s.RegistrationClosesAt = nil }},
+		{"no send-by date", func(s *Settings) { s.OrderDeadline = time.Time{} }},
+		{"no end date", func(s *Settings) { s.DeliveryBy = time.Time{} }},
+		{"registration closes before it opens", func(s *Settings) { s.RegistrationOpensAt, s.RegistrationClosesAt = day(5), day(4) }},
+		{"registration closes after send-by date", func(s *Settings) { s.RegistrationClosesAt = day(14) }},
+		{"send-by after the end", func(s *Settings) { s.OrderDeadline = *day(26) }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			s := valid()
+			tt.mutate(&s)
 			var ae *ActionError
-			if err := b.UpdateSettings(context.Background(), tt.s); !errors.As(err, &ae) {
+			if err := b.validateSettings(&s); !errors.As(err, &ae) {
 				t.Fatalf("want ActionError, got %v", err)
 			}
 		})
 	}
 }
-
-func ptr(t time.Time) *time.Time { return &t }

@@ -25,16 +25,16 @@ const initDataMaxAge = 24 * time.Hour
 
 // Admin is the part of the bot the panel drives; every action also notifies participants in Telegram.
 type Admin interface {
-	ChangeExchangeStatus(ctx context.Context, action string) (domain.ExchangeStatus, error)
-	NewExchange(ctx context.Context, s bot.Settings) error
-	PreviewDistribution(ctx context.Context) (bot.DistributionPreview, error)
-	Distribute(ctx context.Context) (int, error)
+	ChangeExchangeStatus(ctx context.Context, id int64, action string) (domain.ExchangeStatus, error)
+	NewExchange(ctx context.Context, s bot.Settings) (int64, error)
+	PreviewDistribution(ctx context.Context, id int64) (bot.DistributionPreview, error)
+	Distribute(ctx context.Context, id int64) (int, error)
 	RemindNow(ctx context.Context) (int, error)
 	Reassign(ctx context.Context, childID, giverID int64) error
 	Broadcast(ctx context.Context, text string) (int, error)
 	InviteLink() string
 	EffectiveSettings(ex store.Exchange) bot.Settings
-	UpdateSettings(ctx context.Context, s bot.Settings) error
+	UpdateSettings(ctx context.Context, id int64, s bot.Settings) error
 	SetBanned(ctx context.Context, userIDs []int64, banned bool, reason string) (int, error)
 	SendMessage(ctx context.Context, userIDs []int64, text string) (int, error)
 	DeleteExchange(ctx context.Context, id int64, notify bool) error
@@ -58,12 +58,12 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /", http.FileServerFS(static))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
-	mux.Handle("GET /api/state", s.auth(s.handleState))
 	mux.Handle("GET /api/exchanges", s.auth(s.handleExchanges))
 	mux.Handle("GET /api/exchanges/{id}", s.auth(s.handleExchange))
 	mux.Handle("POST /api/exchanges", s.auth(s.handleCreateExchange))
-	mux.Handle("POST /api/settings", s.auth(s.handleSettings))
-	mux.Handle("POST /api/action", s.auth(s.handleAction))
+	mux.Handle("POST /api/exchanges/{id}/settings", s.auth(s.handleSettings))
+	mux.Handle("POST /api/exchanges/{id}/action", s.auth(s.handleAction))
+	mux.Handle("POST /api/remind", s.auth(s.handleRemind))
 	mux.Handle("POST /api/reassign", s.auth(s.handleReassign))
 	mux.Handle("POST /api/broadcast", s.auth(s.handleBroadcast))
 	mux.Handle("GET /api/users", s.auth(s.handleUsers))
@@ -137,6 +137,10 @@ func (s *Server) auth(next func(http.ResponseWriter, *http.Request)) http.Handle
 // ---------- actions ----------
 
 func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
 	var req struct {
 		Action string `json:"action"`
 	}
@@ -149,24 +153,24 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 	switch req.Action {
 	case "open", "close", "finish":
 		var to domain.ExchangeStatus
-		if to, err = s.admin.ChangeExchangeStatus(ctx, req.Action); err == nil {
+		if to, err = s.admin.ChangeExchangeStatus(ctx, id, req.Action); err == nil {
 			msg = "Готово: " + bot.StatusTitle(to) + "."
 		}
 	case "distribute":
 		var n int
-		if n, err = s.admin.Distribute(ctx); err == nil {
+		if n, err = s.admin.Distribute(ctx, id); err == nil {
 			msg = "Распределение готово: " + strconv.Itoa(n) + " подарков. Участникам отправлены карточки."
-		}
-	case "remind":
-		var n int
-		if n, err = s.admin.RemindNow(ctx); err == nil {
-			msg = "Отправлено напоминаний: " + strconv.Itoa(n) + "."
 		}
 	default:
 		writeError(w, http.StatusBadRequest, "Неизвестное действие.")
 		return
 	}
 	s.reply(w, msg, err)
+}
+
+func (s *Server) handleRemind(w http.ResponseWriter, r *http.Request) {
+	n, err := s.admin.RemindNow(r.Context())
+	s.reply(w, "Отправлено напоминаний: "+strconv.Itoa(n)+".", err)
 }
 
 func (s *Server) handleReassign(w http.ResponseWriter, r *http.Request) {

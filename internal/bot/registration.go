@@ -34,7 +34,7 @@ func (b *Bot) onStart(ctx context.Context, msg *tgbotapi.Message, payload string
 		return err
 	}
 
-	ex, err := b.store.CurrentExchange(ctx)
+	ex, err := b.store.ActiveExchange(ctx)
 	if err != nil {
 		return err
 	}
@@ -122,7 +122,7 @@ func (b *Bot) finishRegistration(ctx context.Context, msg *tgbotapi.Message, ses
 	tgID := msg.From.ID
 	editing := sess.Data["edit"] == "1"
 
-	ex, err := b.store.CurrentExchange(ctx)
+	ex, err := b.store.ActiveExchange(ctx)
 	if err != nil {
 		return err
 	}

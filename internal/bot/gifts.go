@@ -21,11 +21,15 @@ const (
 )
 
 func (b *Bot) distributedExchange(ctx context.Context, tgID int64) (store.Exchange, bool, error) {
-	ex, err := b.store.CurrentExchange(ctx)
+	ex, err := b.store.ActiveExchange(ctx)
 	if err != nil {
 		return store.Exchange{}, false, err
 	}
-	if ex.Status != domain.ExchangeDistributed && ex.Status != domain.ExchangeCompleted {
+	if ex.ID == 0 {
+		b.send(tgID, "Сейчас обмен подарками не идёт.", nil)
+		return ex, false, nil
+	}
+	if ex.Status != domain.ExchangeDistributed {
 		b.send(tgID, "Распределение ещё не проводилось. Бот напишет, когда оно будет готово.", nil)
 		return ex, false, nil
 	}
@@ -377,7 +381,7 @@ func (b *Bot) markReceived(ctx context.Context, user store.User, id int64) error
 }
 
 func (b *Bot) notifyIfAllReceived(ctx context.Context) error {
-	ex, err := b.store.CurrentExchange(ctx)
+	ex, err := b.store.ActiveExchange(ctx)
 	if err != nil {
 		return err
 	}

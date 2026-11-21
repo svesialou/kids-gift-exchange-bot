@@ -11,27 +11,17 @@ import (
 	"github.com/svesialou/kids-gift-exchange-bot/internal/store"
 )
 
-// advanceSchedule moves the current exchange along its dates. Each step is a conditional status update,
-// so repeated ticks or a restart never run a step twice; a bot that was down catches up one step per tick.
+// advanceSchedule moves the running exchange along its dates. Registration is opened only by organizers;
+// the scheduler closes it, distributes, records violations and completes the exchange. Each step is a
+// conditional status update or a one-time flag, so repeated ticks or a restart never run a step twice.
 func (b *Bot) advanceSchedule(ctx context.Context, now time.Time) error {
-	ex, err := b.store.CurrentExchange(ctx)
+	ex, err := b.store.ActiveExchange(ctx)
 	if err != nil {
 		return err
 	}
 	s := b.EffectiveSettings(ex)
 
 	switch ex.Status {
-	case domain.ExchangeDraft:
-		if s.RegistrationOpensAt == nil || now.Before(*s.RegistrationOpensAt) {
-			return nil
-		}
-		ok, err := b.store.TransitionExchange(ctx, ex.ID, domain.ExchangeOpen, domain.ExchangeDraft)
-		if err != nil || !ok {
-			return err
-		}
-		b.notifyAdmins(fmt.Sprintf("📅 %s: регистрация открыта по расписанию, закроется %s.\nПриглашение можно отправить из панели.",
-			esc(s.Title), b.localDateTime(*s.RegistrationClosesAt)))
-
 	case domain.ExchangeOpen:
 		if s.RegistrationClosesAt == nil || now.Before(*s.RegistrationClosesAt) {
 			return nil
@@ -40,7 +30,7 @@ func (b *Bot) advanceSchedule(ctx context.Context, now time.Time) error {
 		if err != nil || !ok {
 			return err
 		}
-		n, err := b.Distribute(ctx)
+		n, err := b.Distribute(ctx, ex.ID)
 		var ae *ActionError
 		switch {
 		case errors.As(err, &ae):
@@ -62,7 +52,7 @@ func (b *Bot) advanceSchedule(ctx context.Context, now time.Time) error {
 				esc(s.Title), n))
 		}
 		if !s.DeliveryBy.IsZero() && !now.Before(b.endOfDate(s.DeliveryBy)) {
-			if _, err := b.ChangeExchangeStatus(ctx, "finish"); err != nil {
+			if _, err := b.ChangeExchangeStatus(ctx, ex.ID, "finish"); err != nil {
 				return err
 			}
 		}

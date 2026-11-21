@@ -127,7 +127,7 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 	for _, x := range exchanges { // newest first
 		if e, ok := byExchange[x.ID]; ok {
 			settings := s.admin.EffectiveSettings(x.Exchange)
-			e.Title, e.Status = settings.Title, s.exchangeToJSON(x.Exchange, false).StatusTitle
+			e.Title, e.Status = settings.Title, s.exchangeToJSON(x.Exchange).StatusTitle
 			out.Exchanges = append(out.Exchanges, *e)
 		}
 	}

@@ -59,7 +59,7 @@ func TestScheduleDrivesExchange(t *testing.T) {
 	ctx := context.Background()
 	api, tg := newFakeTelegram(t)
 	minsk, _ := time.LoadLocation("Europe/Minsk")
-	cfg := config.Config{Location: minsk, AdminIDs: []int64{900}, GiftBudgetMax: 25, GiftCurrency: "BYN",
+	cfg := config.Config{Location: minsk, AdminIDs: []int64{900},
 		MorningHour: 10, EveningHour: 19, QuietHour: 22, StuckAfter: 96 * time.Hour}
 	b := New(api, st, cfg)
 
@@ -68,12 +68,13 @@ func TestScheduleDrivesExchange(t *testing.T) {
 	date := func(d int) time.Time { return time.Date(2026, 12, d, 0, 0, 0, 0, time.UTC) }
 	opens := time.Date(2026, 11, 25, 10, 0, 0, 0, minsk)
 	closes := time.Date(2026, 12, 5, 20, 0, 0, 0, minsk)
-	if err := b.NewExchange(ctx, Settings{Title: "Новый год", BudgetMax: 30, Currency: "BYN",
-		RegistrationOpensAt: &opens, RegistrationClosesAt: &closes, OrderDeadline: date(13), DeliveryBy: date(25)}); err != nil {
+	id, err := b.NewExchange(ctx, Settings{Title: "Новый год", BudgetMax: 30, Currency: "BYN",
+		RegistrationOpensAt: &opens, RegistrationClosesAt: &closes, OrderDeadline: date(13), DeliveryBy: date(25)})
+	if err != nil {
 		t.Fatal(err)
 	}
 	status := func() domain.ExchangeStatus {
-		ex, err := st.CurrentExchange(ctx)
+		ex, err := st.ExchangeByID(ctx, id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -87,16 +88,19 @@ func TestScheduleDrivesExchange(t *testing.T) {
 		}
 	}
 
-	tick(opens.Add(-time.Minute))
-	if s := status(); s != domain.ExchangeDraft {
-		t.Fatalf("before opening: %s", s)
+	clock = opens.Add(-time.Minute)
+	if _, err := b.ChangeExchangeStatus(ctx, id, "open"); err == nil {
+		t.Fatal("registration must not open before its window")
 	}
-	tick(opens)
-	if s := status(); s != domain.ExchangeOpen {
-		t.Fatalf("at opening time: %s", s)
+	tick(opens.Add(time.Hour))
+	if s := status(); s != domain.ExchangeDraft {
+		t.Fatalf("the scheduler never opens registration by itself, got %s", s)
+	}
+	if _, err := b.ChangeExchangeStatus(ctx, id, "open"); err != nil {
+		t.Fatalf("registration opens by hand inside its window: %v", err)
 	}
 
-	ex, _ := st.CurrentExchange(ctx)
+	ex, _ := st.ExchangeByID(ctx, id)
 	for i, kids := range []int{2, 1, 1} {
 		tgID := int64(100 + i)
 		if err := st.SaveUser(ctx, store.User{TgID: tgID, FirstName: "P", LastName: "L", Phone: "+375291234567", PVZAddress: "Минск"}); err != nil {

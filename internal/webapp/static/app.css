@@ -140,3 +140,7 @@ input, select { min-width: 0; max-width: 100%; }
 .top-text { min-width: 0; }
 .top-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 input:disabled { opacity: .55; }
+.card.selected { box-shadow: inset 0 0 0 2px var(--accent); }
+.checkmark { font-size: 18px; }
+.check { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.check input { width: auto; }

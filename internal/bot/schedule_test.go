@@ -68,7 +68,7 @@ func TestScheduleDrivesExchange(t *testing.T) {
 	date := func(d int) time.Time { return time.Date(2026, 12, d, 0, 0, 0, 0, time.UTC) }
 	opens := time.Date(2026, 11, 25, 10, 0, 0, 0, minsk)
 	closes := time.Date(2026, 12, 5, 20, 0, 0, 0, minsk)
-	if err := b.UpdateSettings(ctx, Settings{Title: "Новый год", BudgetMax: 30, Currency: "BYN",
+	if err := b.NewExchange(ctx, Settings{Title: "Новый год", BudgetMax: 30, Currency: "BYN",
 		RegistrationOpensAt: &opens, RegistrationClosesAt: &closes, OrderDeadline: date(13), DeliveryBy: date(25)}); err != nil {
 		t.Fatal(err)
 	}

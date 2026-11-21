@@ -371,3 +371,17 @@ func (s *Server) fail(w http.ResponseWriter, op string, err error) {
 	slog.Error("admin panel request failed", "op", op, "error", err)
 	writeError(w, http.StatusInternalServerError, "Не удалось загрузить данные.")
 }
+
+func (s *Server) handleDeleteExchange(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Notify bool `json:"notify"`
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	s.reply(w, "Обмен удалён.", s.admin.DeleteExchange(r.Context(), id, req.Notify))
+}

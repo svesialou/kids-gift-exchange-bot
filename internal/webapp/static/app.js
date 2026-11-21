@@ -33,7 +33,7 @@ const PEOPLE_FILTERS = [["all", "Все"], ["flag", "🚩 С нарушения�
 
 // view describes what is on screen; back returns to the screen it was opened from.
 let view = { section: "exchange", exchangeId: null, sub: "overview", userId: null, back: null };
-const ui = { giftFilter: "all", query: "", peopleFilter: "all" };
+const ui = { giftFilter: "all", query: "", peopleFilter: "all", selecting: false, selected: new Set() };
 const data = { exchange: null, history: null, people: null, user: null };
 
 // ---------- helpers ----------
@@ -224,7 +224,11 @@ function render() {
   const title = document.getElementById("title");
   const subtitle = document.getElementById("subtitle");
   let nodes = [];
-  if (view.section === "exchange") {
+  if (view.section === "exchange" && data.exchange.exchange.id === 0) {
+    title.textContent = "Обменов пока нет";
+    subtitle.textContent = "Создайте первый обмен";
+    nodes = [settingsForm(null)];
+  } else if (view.section === "exchange") {
     const ex = data.exchange.exchange;
     title.textContent = ex.settings.title;
     subtitle.textContent = ex.status_title + (ex.current ? "" : " · архив");
@@ -293,7 +297,39 @@ function renderOverview() {
     out.push(settingsForm(ex.status === "completed" ? null : ex));
     out.push(broadcastCard());
   }
+  out.push(deleteCard(d));
   return out.filter(Boolean);
+}
+
+function deleteCard(d) {
+  const ex = d.exchange;
+  const running = ["registration_open", "registration_closed", "distributed"].includes(ex.status);
+  const notify = h("input", { type: "checkbox", checked: running });
+  const kids = d.families.reduce((n, f) => n + f.children.length, 0);
+  return card(
+    h("h3", null, "Удалить обмен"),
+    h("div", { class: "muted" }, "Удалятся все дети, распределение и нарушения этого обмена. Профили взрослых останутся."),
+    running ? h("label", { class: "check line" }, notify, " Сообщить участникам, что обмен отменён") : null,
+    h("button", {
+      class: "btn danger", type: "button",
+      onclick: async (ev) => {
+        const text = `Удалить «${ex.settings.title}»? Семей: ${d.families.length}, детей: ${kids}, подарков: ${d.assignments.length}. Восстановить будет нельзя.`;
+        if (!(await confirmAction(text))) return;
+        const btn = ev.currentTarget;
+        btn.disabled = true;
+        try {
+          const res = await api(`/api/exchanges/${ex.id}/delete`, { notify: running && notify.checked });
+          haptic("success");
+          toast(res.message);
+          setSection("exchange");
+        } catch (e) {
+          haptic("error");
+          toast(e.message, true);
+          btn.disabled = false;
+        }
+      },
+    }, "Удалить обмен"),
+  );
 }
 
 function scheduleLines(s) {
@@ -681,28 +717,92 @@ function renderHistory() {
 
 // ---------- people ----------
 
+function filteredPeople() {
+  return data.people.filter((u) =>
+    (ui.peopleFilter === "all" || (ui.peopleFilter === "flag" ? u.violations > 0 : u.banned))
+    && matches([u.name, u.username, u.phone]));
+}
+
 function renderPeople() {
-  const chips = h("div", { class: "chips" }, PEOPLE_FILTERS.map(([key, label]) =>
+  const chips = h("div", { class: "chips" },
+    PEOPLE_FILTERS.map(([key, label]) =>
+      h("button", {
+        class: "chip" + (ui.peopleFilter === key ? " active" : ""), type: "button",
+        onclick: () => { ui.peopleFilter = key; render(); },
+      }, label)),
     h("button", {
-      class: "chip" + (ui.peopleFilter === key ? " active" : ""), type: "button",
-      onclick: () => { ui.peopleFilter = key; render(); },
-    }, label)));
+      class: "chip" + (ui.selecting ? " active" : ""), type: "button",
+      onclick: () => { ui.selecting = !ui.selecting; ui.selected.clear(); render(); },
+    }, ui.selecting ? "✕ Отменить выбор" : "☑ Выбрать"),
+  );
   const list = h("div", null);
   const fill = () => {
-    const items = data.people.filter((u) =>
-      (ui.peopleFilter === "all" || (ui.peopleFilter === "flag" ? u.violations > 0 : u.banned))
-      && matches([u.name, u.username, u.phone]));
+    const items = filteredPeople();
     list.replaceChildren(...(items.length ? items.map(personRow) : [empty("Никого не нашли")]));
   };
   fill();
-  return [chips, searchBox("Поиск по имени, телефону, @username", fill), list];
+  return [chips, ui.selecting ? bulkCard() : null, searchBox("Поиск по имени, телефону, @username", fill), list].filter(Boolean);
+}
+
+function bulkCard() {
+  const ids = [...ui.selected];
+  const text = h("textarea", { placeholder: "Сообщение выбранным: придёт от бота" });
+  const reason = h("input", { type: "text", maxlength: "500", placeholder: "Причина блокировки" });
+  const need = () => { if (!ids.length) { toast("Сначала отметьте людей", true); return false; } return true; };
+  return card(
+    h("div", { class: "row" },
+      h("h3", null, "Выбрано: " + ids.length),
+      h("span", { class: "spacer" }),
+      h("button", { class: "btn small secondary", type: "button", onclick: () => { filteredPeople().forEach((u) => ui.selected.add(u.id)); render(); } }, "Всех найденных"),
+      h("button", { class: "btn small secondary", type: "button", onclick: () => { ui.selected.clear(); render(); } }, "Снять"),
+    ),
+    h("div", { class: "line" }, text),
+    h("button", {
+      class: "btn", type: "button",
+      onclick: (ev) => {
+        if (!need()) return;
+        if (!text.value.trim()) return toast("Введите текст сообщения", true);
+        run("/api/messages", { user_ids: ids, text: text.value.trim() }, `Отправить сообщение ${ids.length} получателям?`, ev.currentTarget)
+          .then((ok) => { if (ok) { ui.selecting = false; ui.selected.clear(); render(); } });
+      },
+    }, "Написать выбранным"),
+    h("div", { class: "line" }, reason),
+    h("div", { class: "field-row even" },
+      h("button", {
+        class: "btn danger", type: "button",
+        onclick: (ev) => {
+          if (!need()) return;
+          if (!reason.value.trim()) return toast("Укажите причину блокировки", true);
+          run("/api/users/ban", { user_ids: ids, banned: true, reason: reason.value.trim() },
+            `Заблокировать ${ids.length}? Они не смогут добавлять детей и не попадут в распределение.`, ev.currentTarget);
+        },
+      }, "Заблокировать"),
+      h("button", {
+        class: "btn secondary", type: "button",
+        onclick: (ev) => {
+          if (!need()) return;
+          run("/api/users/ban", { user_ids: ids, banned: false }, `Разблокировать ${ids.length}?`, ev.currentTarget);
+        },
+      }, "Разблокировать"),
+    ),
+  );
 }
 
 function personRow(u) {
-  return h("div", { class: "card clickable" + (u.red_flag ? " flagged" : ""), onclick: () => openUser(u.id) },
-    h("div", { class: "row" }, h("h3", null, u.name), h("span", { class: "spacer" }), flags(u)),
-    h("div", { class: "muted" }, `обменов: ${u.exchanges} · подарил: ${u.gifts_given} · нарушений: ${u.violations}`),
-    contactLine(u),
+  const selected = ui.selected.has(u.id);
+  return h("div", {
+    class: "card clickable" + (u.red_flag ? " flagged" : "") + (selected ? " selected" : ""),
+    onclick: () => {
+      if (!ui.selecting) return openUser(u.id);
+      if (selected) ui.selected.delete(u.id); else ui.selected.add(u.id);
+      render();
+    },
+  },
+  h("div", { class: "row" },
+    ui.selecting ? h("span", { class: "checkmark" }, selected ? "☑" : "☐") : null,
+    h("h3", null, u.name), h("span", { class: "spacer" }), flags(u)),
+  h("div", { class: "muted" }, `обменов: ${u.exchanges} · подарил: ${u.gifts_given} · нарушений: ${u.violations}`),
+  contactLine(u),
   );
 }
 
@@ -712,7 +812,7 @@ function banControls(u) {
       h("div", { class: "line danger-text" }, "Заблокирован: " + u.ban_reason),
       h("button", {
         class: "btn secondary", type: "button",
-        onclick: (ev) => run(`/api/users/${u.id}/ban`, { banned: false }, "Разблокировать? Человек снова сможет участвовать.", ev.currentTarget),
+        onclick: (ev) => run("/api/users/ban", { user_ids: [u.id], banned: false }, "Разблокировать? Человек снова сможет участвовать.", ev.currentTarget),
       }, "Разблокировать"),
     ];
   }
@@ -723,11 +823,27 @@ function banControls(u) {
       class: "btn danger", type: "button",
       onclick: (ev) => {
         if (!reason.value.trim()) return toast("Укажите причину", true);
-        run(`/api/users/${u.id}/ban`, { banned: true, reason: reason.value.trim() },
+        run("/api/users/ban", { user_ids: [u.id], banned: true, reason: reason.value.trim() },
           "Заблокировать? Человек не сможет добавлять детей и не попадёт в следующие распределения.", ev.currentTarget);
       },
     }, "Заблокировать"),
   ];
+}
+
+function messageCard(u) {
+  const text = h("textarea", { placeholder: "Сообщение придёт от бота" });
+  return card(
+    h("h3", null, "Написать"),
+    text,
+    h("button", {
+      class: "btn secondary", type: "button",
+      onclick: (ev) => {
+        if (!text.value.trim()) return toast("Введите текст сообщения", true);
+        run("/api/messages", { user_ids: [u.id], text: text.value.trim() }, null, ev.currentTarget)
+          .then((ok) => { if (ok) text.value = ""; });
+      },
+    }, "Отправить"),
+  );
 }
 
 function renderUser() {
@@ -739,7 +855,7 @@ function renderUser() {
     h("div", { class: "muted line" }, "ПВЗ: " + (u.pvz || "—")),
     h("div", { class: "muted" }, `Зарегистрирован ${fmtDate(u.created_at)} · обменов: ${u.exchanges} · подарил: ${u.gifts_given}`),
     banControls(u),
-  )];
+  ), messageCard(u)];
 
   if (d.violations.length) {
     out.push(h("h4", { class: "section-title" }, "Нарушения"));

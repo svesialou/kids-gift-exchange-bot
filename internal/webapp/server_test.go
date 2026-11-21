@@ -35,21 +35,25 @@ func (f *fakeAdmin) Broadcast(context.Context, string) (int, error) { return 0, 
 func (f *fakeAdmin) EffectiveSettings(ex store.Exchange) bot.Settings {
 	return bot.Settings{Title: "Обмен", BudgetMax: 25, Currency: "BYN"}
 }
-func (f *fakeAdmin) SetBanned(context.Context, int64, bool, string) error     { return nil }
-func (f *fakeAdmin) AddViolation(context.Context, int64, int64, string) error { return nil }
-func (f *fakeAdmin) SetViolationDismissed(context.Context, int64, bool) error { return nil }
-func (f *fakeAdmin) UpdateSettings(context.Context, bot.Settings) error       { return nil }
-func (f *fakeAdmin) InviteLink() string                                       { return "https://t.me/test_bot?start=x" }
+func (f *fakeAdmin) SetBanned(context.Context, []int64, bool, string) (int, error) { return 0, nil }
+func (f *fakeAdmin) SendMessage(context.Context, []int64, string) (int, error)     { return 0, nil }
+func (f *fakeAdmin) DeleteExchange(context.Context, int64, bool) error             { return nil }
+func (f *fakeAdmin) AddViolation(context.Context, int64, int64, string) error      { return nil }
+func (f *fakeAdmin) SetViolationDismissed(context.Context, int64, bool) error      { return nil }
+func (f *fakeAdmin) UpdateSettings(context.Context, bot.Settings) error            { return nil }
+func (f *fakeAdmin) InviteLink() string                                            { return "https://t.me/test_bot?start=x" }
 
 func testStore(t *testing.T) *store.Store { return storetest.New(t) }
 
 func TestPanelAccessAndState(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
-	ex, err := st.CurrentExchange(ctx)
+	exID, err := st.CreateExchange(ctx, store.ExchangeSchedule{Title: "Новый год", BudgetMax: 25, Currency: "BYN",
+		OrderDeadline: time.Date(2026, 12, 13, 0, 0, 0, 0, time.UTC), DeliveryDeadline: time.Date(2026, 12, 25, 0, 0, 0, 0, time.UTC)})
 	if err != nil {
 		t.Fatal(err)
 	}
+	ex, _ := st.ExchangeByID(ctx, exID)
 	if err := st.SaveUser(ctx, store.User{TgID: 1001, FirstName: "Анна", LastName: "Петрова", Phone: "+375291112233", PVZAddress: "Минск, Победителей 1"}); err != nil {
 		t.Fatal(err)
 	}

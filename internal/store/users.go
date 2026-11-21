@@ -185,3 +185,28 @@ func (s *Store) ChildrenOfUser(ctx context.Context, parentID int64) ([]ChildWith
 	}
 	return out, rows.Err()
 }
+
+// UsersByIDs returns the users that exist among ids; unknown ids are skipped.
+func (s *Store) UsersByIDs(ctx context.Context, ids []int64) ([]User, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+userColumns+` FROM users u WHERE u.id IN (`+placeholders(len(ids))+`)`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("users by ids: %w", err)
+	}
+	defer rows.Close()
+	var out []User
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan user: %w", err)
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}

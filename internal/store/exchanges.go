@@ -69,14 +69,12 @@ func scanExchange(row interface{ Scan(...any) error }, extra ...any) (Exchange, 
 	return e, nil
 }
 
-// CurrentExchange returns the latest exchange, creating a draft one on first run.
+// CurrentExchange returns the latest exchange. With no exchanges it returns the zero Exchange
+// (ID 0, status ExchangeNone): lookups by ID 0 find nothing and no status check passes.
 func (s *Store) CurrentExchange(ctx context.Context) (Exchange, error) {
 	e, err := scanExchange(s.db.QueryRowContext(ctx, `SELECT `+exchangeColumns+` FROM exchanges e ORDER BY e.id DESC LIMIT 1`))
 	if errors.Is(err, sql.ErrNoRows) {
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO exchanges (status) VALUES (?)`, domain.ExchangeDraft); err != nil {
-			return Exchange{}, fmt.Errorf("create exchange: %w", err)
-		}
-		return s.CurrentExchange(ctx)
+		return Exchange{Status: domain.ExchangeNone}, nil
 	}
 	if err != nil {
 		return Exchange{}, fmt.Errorf("current exchange: %w", err)
@@ -191,4 +189,52 @@ func utcPtr(t *time.Time) any {
 		return nil
 	}
 	return t.UTC()
+}
+
+// DeleteExchange removes an exchange with its children, assignments, violations and reminder marks.
+func (s *Store) DeleteExchange(ctx context.Context, id int64) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	steps := []string{
+		`DELETE r FROM reminders_sent r JOIN assignments a ON a.id = r.assignment_id WHERE a.exchange_id = ?`,
+		`DELETE FROM violations WHERE exchange_id = ?`,
+		`DELETE FROM assignments WHERE exchange_id = ?`,
+		`DELETE FROM children WHERE exchange_id = ?`,
+	}
+	for _, q := range steps {
+		if _, err := tx.ExecContext(ctx, q, id); err != nil {
+			return false, fmt.Errorf("delete exchange data: %w", err)
+		}
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM exchanges WHERE id = ?`, id)
+	if err != nil {
+		return false, fmt.Errorf("delete exchange: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return false, nil
+	}
+	return true, tx.Commit()
+}
+
+// ParentTgIDs lists Telegram ids of everyone who registered children in the exchange.
+func (s *Store) ParentTgIDs(ctx context.Context, exchangeID int64) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT u.tg_id FROM children c JOIN users u ON u.id = c.parent_user_id WHERE c.exchange_id = ?`, exchangeID)
+	if err != nil {
+		return nil, fmt.Errorf("parent tg ids: %w", err)
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }

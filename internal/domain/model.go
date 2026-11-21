@@ -3,6 +3,8 @@ package domain
 type ExchangeStatus string
 
 const (
+	// ExchangeNone is the status of the zero Exchange returned while no exchange exists yet.
+	ExchangeNone        ExchangeStatus = ""
 	ExchangeDraft       ExchangeStatus = "draft"
 	ExchangeOpen        ExchangeStatus = "registration_open"
 	ExchangeClosed      ExchangeStatus = "registration_closed"

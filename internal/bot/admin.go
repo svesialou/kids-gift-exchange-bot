@@ -26,6 +26,7 @@ func refuse(format string, args ...any) error {
 }
 
 var statusTitles = map[domain.ExchangeStatus]string{
+	domain.ExchangeNone:        "обмена нет",
 	domain.ExchangeDraft:       "черновик",
 	domain.ExchangeOpen:        "регистрация открыта",
 	domain.ExchangeClosed:      "регистрация закрыта",
@@ -78,22 +79,85 @@ func (b *Bot) ChangeExchangeStatus(ctx context.Context, action string) (domain.E
 	return t.to, nil
 }
 
-// SetBanned blocks a user from adding children and from distributions; existing gifts stay as they are.
-func (b *Bot) SetBanned(ctx context.Context, userID int64, banned bool, reason string) error {
+const maxRecipients = 500
+
+// SetBanned blocks users from adding children and from distributions; existing gifts stay as they are.
+func (b *Bot) SetBanned(ctx context.Context, userIDs []int64, banned bool, reason string) (int, error) {
 	reason = strings.TrimSpace(reason)
-	if banned && reason == "" {
-		return refuse("Укажите причину блокировки.")
+	switch {
+	case len(userIDs) == 0 || len(userIDs) > maxRecipients:
+		return 0, refuse("Выберите от 1 до %d человек.", maxRecipients)
+	case banned && reason == "":
+		return 0, refuse("Укажите причину блокировки.")
+	case len([]rune(reason)) > 500:
+		return 0, refuse("Причина: не больше 500 символов.")
 	}
-	if len([]rune(reason)) > 500 {
-		return refuse("Причина: не больше 500 символов.")
+	changed := 0
+	for _, id := range userIDs {
+		ok, err := b.store.SetBanned(ctx, id, banned, reason, b.now())
+		if err != nil {
+			return changed, err
+		}
+		if ok {
+			changed++
+		}
 	}
-	ok, err := b.store.SetBanned(ctx, userID, banned, reason, b.now())
+	if changed == 0 {
+		return 0, refuse("Пользователи не найдены.")
+	}
+	return changed, nil
+}
+
+// SendMessage delivers an organizer's message to the chosen users from the bot.
+func (b *Bot) SendMessage(ctx context.Context, userIDs []int64, text string) (int, error) {
+	text = strings.TrimSpace(text)
+	switch {
+	case len(userIDs) == 0 || len(userIDs) > maxRecipients:
+		return 0, refuse("Выберите от 1 до %d получателей.", maxRecipients)
+	case text == "" || len([]rune(text)) > 3500:
+		return 0, refuse("Сообщение: от 1 до 3500 символов.")
+	}
+	users, err := b.store.UsersByIDs(ctx, userIDs)
+	if err != nil {
+		return 0, err
+	}
+	for _, u := range users {
+		b.send(u.TgID, "✉️ <b>Сообщение от организаторов</b>\n\n"+esc(text), nil)
+	}
+	return len(users), nil
+}
+
+// DeleteExchange removes an exchange with everything registered in it. With notify, parents of an
+// exchange that was still running get a message that it was cancelled.
+func (b *Bot) DeleteExchange(ctx context.Context, id int64, notify bool) error {
+	ex, err := b.store.ExchangeByID(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return refuse("Обмен не найден.")
+	}
+	if err != nil {
+		return err
+	}
+	title := b.EffectiveSettings(ex).Title
+	var parents []int64
+	if notify && ex.Status != domain.ExchangeDraft && ex.Status != domain.ExchangeCompleted {
+		if parents, err = b.store.ParentTgIDs(ctx, id); err != nil {
+			return err
+		}
+	}
+	ok, err := b.store.DeleteExchange(ctx, id)
 	if err != nil {
 		return err
 	}
 	if !ok {
-		return refuse("Пользователь не найден.")
+		return refuse("Обмен не найден.")
 	}
+	if err := b.LoadSettings(ctx); err != nil {
+		return err
+	}
+	for _, tg := range parents {
+		b.send(tg, fmt.Sprintf("Обмен подарками «%s» отменён организаторами. Если ты уже что-то заказал(а), напиши организатору.", esc(title)), nil)
+	}
+	b.notifyAdmins(fmt.Sprintf("🗑 Обмен «%s» удалён.", esc(title)))
 	return nil
 }
 

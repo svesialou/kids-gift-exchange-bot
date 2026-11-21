@@ -37,7 +37,7 @@ Every round is a separate exchange with a title, a gift budget and four dates:
 - gifts must be sent by (date) — after the end of this day givers who have not marked «Заказал(а)» get an `order_overdue` violation;
 - end of the exchange (date) — after the end of this day the exchange completes, reminders stop, and gifts that never reached the pickup point get a `delivery_overdue` violation.
 
-The scheduler moves the current exchange along these dates and notifies admins at every step. Empty registration dates mean organizers open and close registration by hand. Only one exchange runs at a time: the next one can be created once the current one is completed. Adult profiles carry over between exchanges; children are registered per exchange.
+The scheduler moves the current exchange along these dates and notifies admins at every step. Empty registration dates mean organizers open and close registration by hand. Only one exchange runs at a time: the next one can be created once the current one is completed or deleted. Any exchange can be deleted from the panel together with its children, distribution and violations; for a running one organizers can notify its participants. With no exchanges the bot tells newcomers that registration is closed and the panel shows the form for the first exchange. Adult profiles carry over between exchanges; children are registered per exchange.
 
 ## Admin panel
 
@@ -45,7 +45,7 @@ Organizers manage everything from a Telegram Mini App: the «Панель» menu
 
 - «Обмен»: the current exchange. Overview with the stage, actions, invite, conditions and schedule form (or the form for the next exchange), message to everyone; «Семьи»; «Подарки» with filters and reassigning; «Нарушения» with automatic and manual entries that can be dismissed.
 - «История»: every past exchange opens the same views read-only, including who gave to whom and the violations.
-- «Люди»: the user base across all exchanges with participation counts, gifts given and active violations. A user with violations or a ban gets a red flag. The user card shows the whole history and lets organizers ban or unban: a banned user cannot add children and is left out of distributions.
+- «Люди»: the user base across all exchanges with participation counts, gifts given and active violations. A user with violations or a ban gets a red flag. The user card shows the whole history, sends a personal message from the bot, and bans or unbans: a banned user cannot add children and is left out of distributions. In selection mode organizers tick several people to message, ban or unban them at once.
 
 The bot serves the panel and its API on `HTTP_ADDR` when `WEBAPP_URL` is set. Every API call carries Telegram `initData`; the server checks its HMAC signature with the bot token, rejects data older than 24 hours and lets through only ids from `ADMIN_IDS`. Panel actions go through the same code as the chat commands, so participants get the same Telegram notifications.
 

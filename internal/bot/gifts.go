@@ -3,7 +3,6 @@ package bot
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -26,11 +25,11 @@ func (b *Bot) distributedExchange(ctx context.Context, tgID int64) (store.Exchan
 		return store.Exchange{}, false, err
 	}
 	if ex.ID == 0 {
-		b.send(tgID, "Сейчас обмен подарками не идёт.", nil)
+		b.send(tgID, b.tx("common.no_exchange"), nil)
 		return ex, false, nil
 	}
 	if ex.Status != domain.ExchangeDistributed {
-		b.send(tgID, "Распределение ещё не проводилось. Бот напишет, когда оно будет готово.", nil)
+		b.send(tgID, b.tx("give.not_distributed"), nil)
 		return ex, false, nil
 	}
 	return ex, true, nil
@@ -48,7 +47,7 @@ func (b *Bot) showGiverCards(ctx context.Context, user store.User) error {
 		return err
 	}
 	if len(list) == 0 {
-		b.send(user.TgID, "Тебе не досталось детей в этом обмене.", nil)
+		b.send(user.TgID, b.tx("give.none"), nil)
 		return nil
 	}
 	for _, a := range list {
@@ -58,25 +57,24 @@ func (b *Bot) showGiverCards(ctx context.Context, user store.User) error {
 }
 
 func (b *Bot) giverCardText(a store.Assignment) string {
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "🎁 <b>%s %s</b>, %s, %s\n", esc(a.ChildFirstName), esc(a.ChildLastName), ageText(a.ChildAge), genderText(a.ChildGender))
-	if a.ChildWishes != "" {
-		fmt.Fprintf(&sb, "Пожелания: %s\n", esc(a.ChildWishes))
+	wishes := a.ChildWishes
+	if wishes == "" {
+		wishes = b.label("give.no_wishes")
 	}
-	fmt.Fprintf(&sb, "\nПолучатель посылки: %s %s\nПВЗ Wildberries: %s\n", esc(a.Parent.FirstName), esc(a.Parent.LastName), esc(a.Parent.PVZAddress))
-	fmt.Fprintf(&sb, "Бюджет: %s. Заказать: %s.\n", b.budgetText(), b.orderDeadlineText())
-	fmt.Fprintf(&sb, "\nСтатус: %s", b.statusText(a))
-	return sb.String()
+	return b.tx("give.card",
+		"child_full", a.ChildFirstName+" "+a.ChildLastName, "age", ageText(a.ChildAge), "gender", genderText(a.ChildGender),
+		"wishes", wishes, "parent", a.Parent.FirstName+" "+a.Parent.LastName, "pvz", a.Parent.PVZAddress,
+		"budget", b.budgetText(), "order_deadline", b.orderDeadlineText(), "status", b.statusText(a))
 }
 
 func (b *Bot) giverButtons(a store.Assignment) any {
 	switch a.Status {
 	case domain.AssignmentAssigned:
-		return inlineButtons(button("✅ Заказал(а)", "ord", a.ID))
+		return inlineButtons(button(b.label("btn.ordered"), "ord", a.ID))
 	case domain.AssignmentOrdered:
-		return inlineButtons(button("📦 Пришло в ПВЗ", "arr", a.ID))
+		return inlineButtons(button(b.label("btn.arrived"), "arr", a.ID))
 	case domain.AssignmentArrived:
-		return inlineButtons(button("🔑 Отправить код получения", "code", a.ID))
+		return inlineButtons(button(b.label("btn.send_code"), "code", a.ID))
 	}
 	return nil
 }
@@ -89,25 +87,26 @@ func (b *Bot) sendGiverCard(a store.Assignment, header string) {
 	b.send(a.Giver.TgID, text, b.giverButtons(a))
 }
 
+// statusText is a plain value inserted into other texts.
 func (b *Bot) statusText(a store.Assignment) string {
 	switch a.Status {
 	case domain.AssignmentAssigned:
-		return "ещё не заказан"
+		return b.label("status.assigned")
 	case domain.AssignmentOrdered:
 		if a.ExpectedDate != nil {
-			return "заказан, ожидается " + a.ExpectedDate.Format("02.01")
+			return b.label("status.ordered_expected", "date", a.ExpectedDate.Format("02.01"))
 		}
-		return "заказан"
+		return b.label("status.ordered")
 	case domain.AssignmentArrived:
 		if a.PickupState().CodeValid(b.now()) {
-			return "ждёт в ПВЗ, код на сегодня отправлен"
+			return b.label("status.arrived_code_sent")
 		}
 		if a.PickupState().CodeRequestPending() {
-			return "ждёт в ПВЗ, получатель ждёт код"
+			return b.label("status.arrived_code_wait")
 		}
-		return "ждёт в ПВЗ"
+		return b.label("status.arrived")
 	case domain.AssignmentReceived:
-		return "получен ✅"
+		return b.label("status.received")
 	}
 	return string(a.Status)
 }
@@ -116,7 +115,7 @@ func (b *Bot) statusText(a store.Assignment) string {
 func (b *Bot) giverAssignment(ctx context.Context, user store.User, id int64) (store.Assignment, bool, error) {
 	a, err := b.store.Assignment(ctx, id)
 	if errors.Is(err, store.ErrNotFound) || (err == nil && a.Giver.ID != user.ID) {
-		b.send(user.TgID, "Этот подарок закреплён не за тобой.", nil)
+		b.send(user.TgID, b.tx("give.not_yours"), nil)
 		return store.Assignment{}, false, nil
 	}
 	if err != nil {
@@ -131,15 +130,14 @@ func (b *Bot) startOrdered(ctx context.Context, user store.User, id int64) error
 		return err
 	}
 	if a.Status != domain.AssignmentAssigned {
-		b.send(user.TgID, "Этот подарок уже отмечен как заказанный.", nil)
+		b.send(user.TgID, b.tx("give.already_ordered"), nil)
 		return nil
 	}
 	sess := store.Session{State: stateOrderDate, Data: map[string]string{"aid": strconv.FormatInt(id, 10)}}
 	if err := b.store.SaveSession(ctx, user.TgID, sess); err != nil {
 		return err
 	}
-	b.send(user.TgID, fmt.Sprintf("Когда примерно доставка подарка для %s? Напиши дату в формате ДД.ММ, например 15.12.", esc(a.ChildFirstName)),
-		stepKeyboard(btnDontKnow))
+	b.send(user.TgID, b.tx("give.ask_date", "child", a.ChildFirstName), b.stepKeyboard(b.label("btn.dont_know")))
 	return nil
 }
 
@@ -147,10 +145,10 @@ func (b *Bot) handleOrderDate(ctx context.Context, msg *tgbotapi.Message, sess s
 	tgID := msg.From.ID
 	text := strings.TrimSpace(msg.Text)
 	var expected *time.Time
-	if text != btnDontKnow {
+	if text != b.label("btn.dont_know") {
 		d, ok := parseDayMonth(text, b.now().In(b.cfg.Location))
 		if !ok {
-			b.send(tgID, "Не понял дату. Напиши в формате ДД.ММ, например 15.12, или нажми «Не знаю».", nil)
+			b.send(tgID, b.tx("give.bad_date"), nil)
 			return nil
 		}
 		expected = &d
@@ -169,19 +167,19 @@ func (b *Bot) handleOrderDate(ctx context.Context, msg *tgbotapi.Message, sess s
 		return err
 	}
 	if !ok {
-		return b.showMenu(ctx, tgID, "Не получилось: подарок уже отмечен или закреплён не за тобой.")
+		return b.showMenu(ctx, tgID, b.tx("give.mark_failed"))
 	}
 	a, err := b.store.Assignment(ctx, id)
 	if err != nil {
 		return err
 	}
 
-	when := "дату доставки пока не знаем"
+	when := b.label("recv.when_unknown")
 	if expected != nil {
-		when = "ожидаемая дата доставки " + expected.Format("02.01")
+		when = b.label("recv.when_date", "date", expected.Format("02.01"))
 	}
-	b.send(a.Parent.TgID, fmt.Sprintf("🎁 Подарок для <b>%s</b> заказан, %s. Когда посылка придёт в ПВЗ, я напишу.", esc(a.ChildFirstName), when), nil)
-	b.send(tgID, "Отлично, записал. Когда посылка придёт в ПВЗ, нажми «Пришло в ПВЗ».", mainMenu())
+	b.send(a.Parent.TgID, b.tx("recv.ordered", "child", a.ChildFirstName, "when", when), nil)
+	b.send(tgID, b.tx("give.ordered_ok"), b.mainMenu())
 	b.sendGiverCard(a, "")
 	return nil
 }
@@ -192,19 +190,17 @@ func (b *Bot) markArrived(ctx context.Context, user store.User, id int64) error 
 		return err
 	}
 	if !ok {
-		b.send(user.TgID, "Не получилось: подарок уже отмечен или закреплён не за тобой.", nil)
+		b.send(user.TgID, b.tx("give.mark_failed"), nil)
 		return nil
 	}
 	a, err := b.store.Assignment(ctx, id)
 	if err != nil {
 		return err
 	}
-	b.send(a.Parent.TgID, fmt.Sprintf(
-		"📦 Посылка для <b>%s</b> пришла в ПВЗ:\n%s\n\nКогда соберёшься забирать, нажми «Иду забирать», и даритель пришлёт код. Код действует только в день отправки.",
-		esc(a.ChildFirstName), esc(a.Parent.PVZAddress)),
-		inlineButtons(button("🚶 Иду забирать, нужен код", "pick", a.ID)))
-	b.send(user.TgID, "Записал. Получатель попросит код, когда пойдёт забирать, и я сразу напишу тебе. Можно прислать код и сейчас, если получатель собирается забрать сегодня.",
-		inlineButtons(button("🔑 Отправить код получения", "code", a.ID)))
+	b.send(a.Parent.TgID, b.tx("recv.arrived", "child", a.ChildFirstName, "pvz", a.Parent.PVZAddress),
+		inlineButtons(button(b.label("btn.going"), "pick", a.ID)))
+	b.send(user.TgID, b.tx("give.arrived_ok"),
+		inlineButtons(button(b.label("btn.send_code"), "code", a.ID)))
 	return nil
 }
 
@@ -214,16 +210,14 @@ func (b *Bot) startCode(ctx context.Context, user store.User, id int64) error {
 		return err
 	}
 	if a.Status == domain.AssignmentReceived {
-		b.send(user.TgID, "Этот подарок уже получен 🎉", nil)
+		b.send(user.TgID, b.tx("give.already_received"), nil)
 		return nil
 	}
 	sess := store.Session{State: stateCode, Data: map[string]string{"aid": strconv.FormatInt(id, 10)}}
 	if err := b.store.SaveSession(ctx, user.TgID, sess); err != nil {
 		return err
 	}
-	b.send(user.TgID, fmt.Sprintf(
-		"Пришли код получения посылки для %s из приложения Wildberries: текстом или скриншотом QR-кода. Код действует только сегодня.",
-		esc(a.ChildFirstName)), cancelKeyboard())
+	b.send(user.TgID, b.tx("give.ask_code", "child", a.ChildFirstName), b.cancelKeyboard())
 	return nil
 }
 
@@ -236,7 +230,7 @@ func (b *Bot) handleCodeInput(ctx context.Context, msg *tgbotapi.Message, sess s
 		text = strings.TrimSpace(msg.Caption)
 	}
 	if fileID == "" && (text == "" || utf8.RuneCountInString(text) > 255) {
-		b.send(tgID, "Пришли код текстом (до 255 символов) или скриншотом QR-кода.", nil)
+		b.send(tgID, b.tx("give.bad_code_input"), nil)
 		return nil
 	}
 
@@ -255,29 +249,28 @@ func (b *Bot) handleCodeInput(ctx context.Context, msg *tgbotapi.Message, sess s
 		return err
 	}
 	if !ok {
-		return b.showMenu(ctx, tgID, "Не получилось сохранить код: подарок уже получен или закреплён не за тобой.")
+		return b.showMenu(ctx, tgID, b.tx("give.code_failed"))
 	}
 	a, err := b.store.Assignment(ctx, id)
 	if err != nil {
 		return err
 	}
 	b.sendCodeToRecipient(a)
-	b.send(tgID, "Код отправлен получателю ✅ Если сегодня не заберут, я напомню прислать новый.", mainMenu())
+	b.send(tgID, b.tx("give.code_sent_ok"), b.mainMenu())
 	return nil
 }
 
 func (b *Bot) sendCodeToRecipient(a store.Assignment) {
-	caption := fmt.Sprintf("🔑 Код получения посылки для <b>%s</b>", esc(a.ChildFirstName))
-	if a.CodeText != "" {
-		caption += fmt.Sprintf(":\n<code>%s</code>", esc(a.CodeText))
-	}
-	caption += fmt.Sprintf("\n\nПВЗ: %s\nКод действует <b>только сегодня</b>. Когда заберёшь, нажми «Забрал(а)».", esc(a.Parent.PVZAddress))
-	markup := inlineButtons(button("✅ Забрал(а)", "got", a.ID), button("❌ Код не подошёл", "bad", a.ID))
+	markup := inlineButtons(button(b.label("btn.received"), "got", a.ID), button(b.label("btn.bad_code"), "bad", a.ID))
 	if a.CodeFileID != "" {
+		caption := b.tx("recv.code_photo", "child", a.ChildFirstName, "pvz", a.Parent.PVZAddress)
+		if a.CodeText != "" {
+			caption = b.tx("recv.code", "child", a.ChildFirstName, "code", a.CodeText, "pvz", a.Parent.PVZAddress)
+		}
 		b.sendPhoto(a.Parent.TgID, a.CodeFileID, caption, markup)
 		return
 	}
-	b.send(a.Parent.TgID, caption, markup)
+	b.send(a.Parent.TgID, b.tx("recv.code", "child", a.ChildFirstName, "code", a.CodeText, "pvz", a.Parent.PVZAddress), markup)
 }
 
 // ---------- recipient side ----------
@@ -292,18 +285,18 @@ func (b *Bot) showRecipientCards(ctx context.Context, user store.User) error {
 		return err
 	}
 	if len(list) == 0 {
-		b.send(user.TgID, "Твоих детей нет в этом обмене.", nil)
+		b.send(user.TgID, b.tx("recv.none"), nil)
 		return nil
 	}
 	now := b.now()
 	for _, a := range list {
-		text := fmt.Sprintf("📦 Подарок для <b>%s</b>: %s", esc(a.ChildFirstName), b.statusText(a))
+		text := b.tx("recv.item", "child", a.ChildFirstName, "status", b.statusText(a))
 		var markup any
 		if a.Status == domain.AssignmentArrived {
 			if a.PickupState().CodeValid(now) {
-				markup = inlineButtons(button("🔑 Показать код", "pick", a.ID), button("✅ Забрал(а)", "got", a.ID), button("❌ Код не подошёл", "bad", a.ID))
+				markup = inlineButtons(button(b.label("btn.show_code"), "pick", a.ID), button(b.label("btn.received"), "got", a.ID), button(b.label("btn.bad_code"), "bad", a.ID))
 			} else {
-				markup = inlineButtons(button("🚶 Иду забирать, нужен код", "pick", a.ID))
+				markup = inlineButtons(button(b.label("btn.going"), "pick", a.ID))
 			}
 		}
 		b.send(user.TgID, text, markup)
@@ -314,7 +307,7 @@ func (b *Bot) showRecipientCards(ctx context.Context, user store.User) error {
 func (b *Bot) recipientAssignment(ctx context.Context, user store.User, id int64) (store.Assignment, bool, error) {
 	a, err := b.store.Assignment(ctx, id)
 	if errors.Is(err, store.ErrNotFound) || (err == nil && a.Parent.ID != user.ID) {
-		b.send(user.TgID, "Это не посылка для твоего ребёнка.", nil)
+		b.send(user.TgID, b.tx("recv.not_yours"), nil)
 		return store.Assignment{}, false, nil
 	}
 	if err != nil {
@@ -331,10 +324,10 @@ func (b *Bot) requestCode(ctx context.Context, user store.User, id int64, invali
 	}
 	switch a.Status {
 	case domain.AssignmentReceived:
-		b.send(user.TgID, "Эта посылка уже отмечена как полученная 🎉", nil)
+		b.send(user.TgID, b.tx("recv.already_received"), nil)
 		return nil
 	case domain.AssignmentAssigned, domain.AssignmentOrdered:
-		b.send(user.TgID, "Посылка ещё не пришла в ПВЗ. Я напишу, когда даритель отметит доставку.", nil)
+		b.send(user.TgID, b.tx("recv.not_arrived"), nil)
 		return nil
 	}
 
@@ -348,17 +341,16 @@ func (b *Bot) requestCode(ctx context.Context, user store.User, id int64, invali
 		return err
 	}
 	if !ok {
-		b.send(user.TgID, "Не получилось запросить код, попробуй ещё раз.", nil)
+		b.send(user.TgID, b.tx("recv.request_failed"), nil)
 		return nil
 	}
 
-	reason := "Получатель собирается забрать посылку"
+	key := "give.code_requested"
 	if invalidate {
-		reason = "Код не подошёл"
+		key = "give.code_rejected"
 	}
-	b.send(a.Giver.TgID, fmt.Sprintf("🔔 %s для <b>%s</b>. Пришли, пожалуйста, сегодняшний код получения из приложения Wildberries.",
-		reason, esc(a.ChildFirstName)), inlineButtons(button("🔑 Отправить код получения", "code", a.ID)))
-	b.send(user.TgID, "Попросил дарителя прислать код. Как только он придёт, я перешлю его сюда.", nil)
+	b.send(a.Giver.TgID, b.tx(key, "child", a.ChildFirstName), inlineButtons(button(b.label("btn.send_code"), "code", a.ID)))
+	b.send(user.TgID, b.tx("recv.requested"), nil)
 	return nil
 }
 
@@ -372,11 +364,11 @@ func (b *Bot) markReceived(ctx context.Context, user store.User, id int64) error
 		return err
 	}
 	if !ok {
-		b.send(user.TgID, "Эта посылка уже отмечена как полученная или ещё не отправлена.", nil)
+		b.send(user.TgID, b.tx("recv.mark_failed"), nil)
 		return nil
 	}
-	b.send(user.TgID, fmt.Sprintf("🎉 Ура! Подарок для %s получен. Спасибо!", esc(a.ChildFirstName)), nil)
-	b.send(a.Giver.TgID, fmt.Sprintf("🎉 Подарок для <b>%s</b> получен. Спасибо, что участвуешь!", esc(a.ChildFirstName)), nil)
+	b.send(user.TgID, b.tx("recv.thanks", "child", a.ChildFirstName), nil)
+	b.send(a.Giver.TgID, b.tx("give.thanks", "child", a.ChildFirstName), nil)
 	return b.notifyIfAllReceived(ctx)
 }
 

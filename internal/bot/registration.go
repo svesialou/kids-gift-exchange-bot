@@ -28,7 +28,7 @@ func (b *Bot) onStart(ctx context.Context, msg *tgbotapi.Message, payload string
 
 	user, err := b.store.UserByTG(ctx, tgID)
 	if err == nil {
-		return b.showMenu(ctx, tgID, fmt.Sprintf("Привет, %s! Главное меню ниже.", esc(user.FirstName)))
+		return b.showMenu(ctx, tgID, b.tx("reg.welcome_back", "name", user.FirstName))
 	}
 	if !errors.Is(err, store.ErrNotFound) {
 		return err
@@ -39,15 +39,15 @@ func (b *Bot) onStart(ctx context.Context, msg *tgbotapi.Message, payload string
 		return err
 	}
 	if ex.Status != domain.ExchangeOpen {
-		b.send(tgID, "Привет! Сейчас регистрация на обмен подарками закрыта.", tgbotapi.NewRemoveKeyboard(true))
+		b.send(tgID, b.tx("reg.closed"), tgbotapi.NewRemoveKeyboard(true))
 		return nil
 	}
 	if b.cfg.InviteCode != "" && payload != b.cfg.InviteCode && !b.cfg.IsAdmin(tgID) {
-		b.send(tgID, "Привет! Чтобы участвовать, открой бота по ссылке-приглашению от организатора.", tgbotapi.NewRemoveKeyboard(true))
+		b.send(tgID, b.tx("reg.need_invite"), tgbotapi.NewRemoveKeyboard(true))
 		return nil
 	}
 
-	b.send(tgID, "Привет! Это обмен подарками между детьми. Сначала зарегистрируемся: это один взрослый на семью.", nil)
+	b.send(tgID, b.tx("reg.intro"), nil)
 	return b.startRegistration(ctx, tgID, false)
 }
 
@@ -59,7 +59,7 @@ func (b *Bot) startRegistration(ctx context.Context, tgID int64, edit bool) erro
 	if err := b.store.SaveSession(ctx, tgID, store.Session{State: stateRegFirst, Data: data}); err != nil {
 		return err
 	}
-	b.send(tgID, "Как тебя зовут? Напиши <b>имя</b>.", cancelKeyboard())
+	b.send(tgID, b.tx("reg.ask_first"), b.cancelKeyboard())
 	return nil
 }
 
@@ -70,47 +70,47 @@ func (b *Bot) handleRegistrationStep(ctx context.Context, msg *tgbotapi.Message,
 	switch sess.State {
 	case stateRegFirst:
 		if !validName(text) {
-			b.send(tgID, "Имя должно быть от 1 до 100 символов. Попробуй ещё раз.", nil)
+			b.send(tgID, b.tx("reg.bad_first"), nil)
 			return nil
 		}
 		sess.Data["first_name"] = text
 		sess.State = stateRegLast
-		b.send(tgID, "Теперь <b>фамилию</b>.", nil)
+		b.send(tgID, b.tx("reg.ask_last"), nil)
 
 	case stateRegLast:
 		if !validName(text) {
-			b.send(tgID, "Фамилия должна быть от 1 до 100 символов. Попробуй ещё раз.", nil)
+			b.send(tgID, b.tx("reg.bad_last"), nil)
 			return nil
 		}
 		sess.Data["last_name"] = text
 		sess.State = stateRegPhone
 		kb := tgbotapi.NewReplyKeyboard(
-			tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButtonContact("📱 Отправить мой номер")),
-			tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton(btnCancel)),
+			tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButtonContact(b.label("btn.share_phone"))),
+			tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton(b.label("btn.cancel"))),
 		)
 		kb.ResizeKeyboard = true
-		b.send(tgID, "Нужен телефон, чтобы организатор мог связаться, если с посылкой что-то пойдёт не так. Нажми кнопку или напиши номер.", kb)
+		b.send(tgID, b.tx("reg.ask_phone"), kb)
 
 	case stateRegPhone:
 		phone := text
 		if msg.Contact != nil {
 			if msg.Contact.UserID != 0 && msg.Contact.UserID != tgID {
-				b.send(tgID, "Нужен твой номер, а не чужой контакт.", nil)
+				b.send(tgID, b.tx("reg.foreign_contact"), nil)
 				return nil
 			}
 			phone = msg.Contact.PhoneNumber
 		}
 		if !validPhone(phone) {
-			b.send(tgID, "Не похоже на номер телефона. Нажми кнопку или напиши номер, например +375291234567.", nil)
+			b.send(tgID, b.tx("reg.bad_phone"), nil)
 			return nil
 		}
 		sess.Data["phone"] = phone
 		sess.State = stateRegPVZ
-		b.send(tgID, "Последний шаг: <b>адрес ПВЗ Wildberries</b>, куда тебе будут заказывать посылку. Город, улица, дом.", cancelKeyboard())
+		b.send(tgID, b.tx("reg.ask_pvz"), b.cancelKeyboard())
 
 	case stateRegPVZ:
 		if utf8.RuneCountInString(text) < 5 || utf8.RuneCountInString(text) > 500 {
-			b.send(tgID, "Адрес должен быть от 5 до 500 символов. Попробуй ещё раз.", nil)
+			b.send(tgID, b.tx("reg.bad_pvz"), nil)
 			return nil
 		}
 		return b.finishRegistration(ctx, msg, sess, text)
@@ -130,7 +130,7 @@ func (b *Bot) finishRegistration(ctx context.Context, msg *tgbotapi.Message, ses
 		if err := b.store.SaveSession(ctx, tgID, store.Session{}); err != nil {
 			return err
 		}
-		b.send(tgID, "Пока ты заполнял(а) данные, регистрация закрылась. Напиши организатору.", tgbotapi.NewRemoveKeyboard(true))
+		b.send(tgID, b.tx("reg.closed_meanwhile"), tgbotapi.NewRemoveKeyboard(true))
 		return nil
 	}
 
@@ -158,10 +158,10 @@ func (b *Bot) finishRegistration(ctx context.Context, msg *tgbotapi.Message, ses
 		if oldErr == nil && old.PVZAddress != pvz {
 			b.notifyGiversAboutAddress(ctx, ex, old.ID, pvz)
 		}
-		return b.showMenu(ctx, tgID, "Данные обновлены.")
+		return b.showMenu(ctx, tgID, b.tx("reg.updated"))
 	}
 
-	b.send(tgID, "Готово, ты зарегистрирован(а)! Теперь добавь детей, которые участвуют в обмене.", mainMenu())
+	b.send(tgID, b.tx("reg.done"), b.mainMenu())
 	saved, err := b.store.UserByTG(ctx, tgID)
 	if err != nil {
 		return err
@@ -182,16 +182,14 @@ func (b *Bot) notifyGiversAboutAddress(ctx context.Context, ex store.Exchange, p
 		if a.Status == domain.AssignmentReceived {
 			continue
 		}
-		b.send(a.Giver.TgID, fmt.Sprintf("⚠️ У получателя подарка для <b>%s</b> изменился адрес ПВЗ:\n%s\n\nЕсли ещё не заказал(а), заказывай на новый адрес.",
-			esc(a.ChildFirstName), esc(pvz)), nil)
+		b.send(a.Giver.TgID, b.tx("reg.pvz_changed", "child", a.ChildFirstName, "pvz", pvz), nil)
 	}
 	b.notifyAdmins(fmt.Sprintf("Участник (user %d) сменил адрес ПВЗ после распределения.", parentID))
 }
 
 func (b *Bot) showProfile(ctx context.Context, user store.User) error {
-	text := fmt.Sprintf("<b>Мой профиль</b>\n\n%s %s\nТелефон: %s\nПВЗ Wildberries: %s",
-		esc(user.FirstName), esc(user.LastName), esc(user.Phone), esc(user.PVZAddress))
-	b.send(user.TgID, text, inlineButtons(button("✏️ Изменить данные", "prof", 0)))
+	text := b.tx("reg.profile", "first_name", user.FirstName, "last_name", user.LastName, "phone", user.Phone, "pvz", user.PVZAddress)
+	b.send(user.TgID, text, inlineButtons(button(b.label("btn.edit_profile"), "prof", 0)))
 	return nil
 }
 

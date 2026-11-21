@@ -28,13 +28,24 @@ The scheduler checks assignments every `SCHEDULER_INTERVAL`. Every kind of remin
 | Code expires today | recipient | valid code, after `EVENING_HOUR` |
 | Parcel is stuck | admins | arrived more than `STUCK_AFTER` ago |
 
+## Exchanges and schedule
+
+Every round is a separate exchange with a title, a gift budget and four dates:
+
+- registration opens (date and time);
+- registration closes (date and time) — right after that the bot distributes the children and sends the cards;
+- gifts must be sent by (date) — after the end of this day givers who have not marked «Заказал(а)» get an `order_overdue` violation;
+- end of the exchange (date) — after the end of this day the exchange completes, reminders stop, and gifts that never reached the pickup point get a `delivery_overdue` violation.
+
+The scheduler moves the current exchange along these dates and notifies admins at every step. Empty registration dates mean organizers open and close registration by hand. Only one exchange runs at a time: the next one can be created once the current one is completed. Adult profiles carry over between exchanges; children are registered per exchange.
+
 ## Admin panel
 
-Organizers manage the exchange from a Telegram Mini App: the «Панель» menu button in their chat with the bot, or `/admin`.
+Organizers manage everything from a Telegram Mini App: the «Панель» menu button in their chat with the bot, or `/admin`.
 
-- Overview: current stage with the next action (open or close registration, distribute, remind, finish), invite link, conditions, message to everyone.
-- Families: every registered adult with phone, username, ПВЗ and children; users who registered without children are listed separately.
-- Gifts: every assignment with status, giver and recipient, filters, and «Передать другому дарителю».
+- «Обмен»: the current exchange. Overview with the stage, actions, invite, conditions and schedule form (or the form for the next exchange), message to everyone; «Семьи»; «Подарки» with filters and reassigning; «Нарушения» with automatic and manual entries that can be dismissed.
+- «История»: every past exchange opens the same views read-only, including who gave to whom and the violations.
+- «Люди»: the user base across all exchanges with participation counts, gifts given and active violations. A user with violations or a ban gets a red flag. The user card shows the whole history and lets organizers ban or unban: a banned user cannot add children and is left out of distributions.
 
 The bot serves the panel and its API on `HTTP_ADDR` when `WEBAPP_URL` is set. Every API call carries Telegram `initData`; the server checks its HMAC signature with the bot token, rejects data older than 24 hours and lets through only ids from `ADMIN_IDS`. Panel actions go through the same code as the chat commands, so participants get the same Telegram notifications.
 
@@ -46,7 +57,7 @@ Commands are hidden from the menu and work only for ids from `ADMIN_IDS`. `/admi
 
 All settings come from environment variables, see `.env.example`. Required: `TELEGRAM_BOT_TOKEN`, `DB_PASSWORD`. Reminder hours can be changed with a restart.
 
-Budget, currency and both deadlines are edited by organizers in the panel («Обзор» → «Условия») and stored per exchange. `GIFT_BUDGET_MAX`, `GIFT_CURRENCY`, `ORDER_DEADLINE` and `DELIVERY_DEADLINE` are only the defaults for an exchange where nothing was saved yet. Migrations run automatically on start.
+Title, budget, currency and dates are set per exchange in the panel. `GIFT_BUDGET_MAX`, `GIFT_CURRENCY`, `ORDER_DEADLINE` and `DELIVERY_DEADLINE` are only defaults for an exchange where nothing was saved, and the budget suggested for a new one. Migrations run automatically on start.
 
 ## Development
 

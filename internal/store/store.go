@@ -65,211 +65,6 @@ func (s *Store) Migrate() (uint, error) {
 	return version, nil
 }
 
-// ---------- exchanges ----------
-
-type Exchange struct {
-	ID     int64
-	Status domain.ExchangeStatus
-}
-
-// CurrentExchange returns the latest exchange, creating a draft one on first run.
-func (s *Store) CurrentExchange(ctx context.Context) (Exchange, error) {
-	var e Exchange
-	err := s.db.QueryRowContext(ctx, `SELECT id, status FROM exchanges ORDER BY id DESC LIMIT 1`).Scan(&e.ID, &e.Status)
-	if errors.Is(err, sql.ErrNoRows) {
-		res, err := s.db.ExecContext(ctx, `INSERT INTO exchanges (status) VALUES (?)`, domain.ExchangeDraft)
-		if err != nil {
-			return Exchange{}, fmt.Errorf("create exchange: %w", err)
-		}
-		id, _ := res.LastInsertId()
-		return Exchange{ID: id, Status: domain.ExchangeDraft}, nil
-	}
-	if err != nil {
-		return Exchange{}, fmt.Errorf("current exchange: %w", err)
-	}
-	return e, nil
-}
-
-func (s *Store) CreateExchange(ctx context.Context) error {
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO exchanges (status) VALUES (?)`, domain.ExchangeDraft); err != nil {
-		return fmt.Errorf("create exchange: %w", err)
-	}
-	return nil
-}
-
-// ExchangeSettings holds per-exchange overrides; nil means "use the default from env".
-type ExchangeSettings struct {
-	BudgetMax        *int
-	Currency         *string
-	OrderDeadline    *time.Time
-	DeliveryDeadline *time.Time
-}
-
-func (s *Store) ExchangeSettings(ctx context.Context, exchangeID int64) (ExchangeSettings, error) {
-	var budget sql.NullInt64
-	var currency sql.NullString
-	var order, delivery sql.NullTime
-	err := s.db.QueryRowContext(ctx,
-		`SELECT gift_budget_max, gift_currency, order_deadline, delivery_deadline FROM exchanges WHERE id = ?`, exchangeID,
-	).Scan(&budget, &currency, &order, &delivery)
-	if err != nil {
-		return ExchangeSettings{}, fmt.Errorf("exchange settings: %w", err)
-	}
-	var out ExchangeSettings
-	if budget.Valid {
-		v := int(budget.Int64)
-		out.BudgetMax = &v
-	}
-	if currency.Valid {
-		out.Currency = &currency.String
-	}
-	out.OrderDeadline = nullTime(order)
-	out.DeliveryDeadline = nullTime(delivery)
-	return out, nil
-}
-
-func (s *Store) SaveExchangeSettings(ctx context.Context, exchangeID int64, budgetMax int, currency string, orderDeadline, deliveryDeadline time.Time) error {
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE exchanges SET gift_budget_max = ?, gift_currency = ?, order_deadline = ?, delivery_deadline = ?
-		WHERE id = ?`,
-		budgetMax, currency, orderDeadline.Format("2006-01-02"), deliveryDeadline.Format("2006-01-02"), exchangeID)
-	if err != nil {
-		return fmt.Errorf("save exchange settings: %w", err)
-	}
-	return nil
-}
-
-// TransitionExchange moves the exchange to `to` only if it is currently in one of `from`.
-func (s *Store) TransitionExchange(ctx context.Context, id int64, to domain.ExchangeStatus, from ...domain.ExchangeStatus) (bool, error) {
-	query := `UPDATE exchanges SET status = ?, completed_at = IF(? = 'completed', UTC_TIMESTAMP(), completed_at) WHERE id = ? AND status IN (` + placeholders(len(from)) + `)`
-	args := []any{to, to, id}
-	for _, f := range from {
-		args = append(args, f)
-	}
-	res, err := s.db.ExecContext(ctx, query, args...)
-	if err != nil {
-		return false, fmt.Errorf("transition exchange: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	return n == 1, nil
-}
-
-// ---------- users ----------
-
-type User struct {
-	ID         int64
-	TgID       int64
-	TgUsername string
-	FirstName  string
-	LastName   string
-	Phone      string
-	PVZAddress string
-}
-
-func (s *Store) UserByTG(ctx context.Context, tgID int64) (User, error) {
-	var u User
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, tg_id, tg_username, first_name, last_name, phone, pvz_address FROM users WHERE tg_id = ?`, tgID,
-	).Scan(&u.ID, &u.TgID, &u.TgUsername, &u.FirstName, &u.LastName, &u.Phone, &u.PVZAddress)
-	if errors.Is(err, sql.ErrNoRows) {
-		return User{}, ErrNotFound
-	}
-	if err != nil {
-		return User{}, fmt.Errorf("user by tg: %w", err)
-	}
-	return u, nil
-}
-
-func (s *Store) UserByID(ctx context.Context, id int64) (User, error) {
-	var u User
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, tg_id, tg_username, first_name, last_name, phone, pvz_address FROM users WHERE id = ?`, id,
-	).Scan(&u.ID, &u.TgID, &u.TgUsername, &u.FirstName, &u.LastName, &u.Phone, &u.PVZAddress)
-	if errors.Is(err, sql.ErrNoRows) {
-		return User{}, ErrNotFound
-	}
-	if err != nil {
-		return User{}, fmt.Errorf("user by id: %w", err)
-	}
-	return u, nil
-}
-
-func (s *Store) SaveUser(ctx context.Context, u User) error {
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO users (tg_id, tg_username, first_name, last_name, phone, pvz_address)
-		VALUES (?, ?, ?, ?, ?, ?)
-		ON DUPLICATE KEY UPDATE tg_username = VALUES(tg_username), first_name = VALUES(first_name),
-			last_name = VALUES(last_name), phone = VALUES(phone), pvz_address = VALUES(pvz_address)`,
-		u.TgID, u.TgUsername, u.FirstName, u.LastName, u.Phone, u.PVZAddress)
-	if err != nil {
-		return fmt.Errorf("save user: %w", err)
-	}
-	return nil
-}
-
-type Participant struct {
-	User
-	Children int
-}
-
-// Participants lists users who registered at least one child in the exchange.
-func (s *Store) Participants(ctx context.Context, exchangeID int64) ([]Participant, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT u.id, u.tg_id, u.tg_username, u.first_name, u.last_name, u.phone, u.pvz_address, COUNT(c.id)
-		FROM users u
-		JOIN children c ON c.parent_user_id = u.id AND c.exchange_id = ?
-		GROUP BY u.id
-		ORDER BY u.last_name, u.first_name`, exchangeID)
-	if err != nil {
-		return nil, fmt.Errorf("participants: %w", err)
-	}
-	defer rows.Close()
-	var out []Participant
-	for rows.Next() {
-		var p Participant
-		if err := rows.Scan(&p.ID, &p.TgID, &p.TgUsername, &p.FirstName, &p.LastName, &p.Phone, &p.PVZAddress, &p.Children); err != nil {
-			return nil, fmt.Errorf("scan participant: %w", err)
-		}
-		out = append(out, p)
-	}
-	return out, rows.Err()
-}
-
-func (s *Store) Users(ctx context.Context) ([]User, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, tg_id, tg_username, first_name, last_name, phone, pvz_address FROM users ORDER BY last_name, first_name`)
-	if err != nil {
-		return nil, fmt.Errorf("users: %w", err)
-	}
-	defer rows.Close()
-	var out []User
-	for rows.Next() {
-		var u User
-		if err := rows.Scan(&u.ID, &u.TgID, &u.TgUsername, &u.FirstName, &u.LastName, &u.Phone, &u.PVZAddress); err != nil {
-			return nil, fmt.Errorf("scan user: %w", err)
-		}
-		out = append(out, u)
-	}
-	return out, rows.Err()
-}
-
-func (s *Store) AllUserTgIDs(ctx context.Context) ([]int64, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT tg_id FROM users ORDER BY id`)
-	if err != nil {
-		return nil, fmt.Errorf("all users: %w", err)
-	}
-	defer rows.Close()
-	var out []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		out = append(out, id)
-	}
-	return out, rows.Err()
-}
-
 // ---------- children ----------
 
 type Child struct {
@@ -355,9 +150,11 @@ type querier interface {
 }
 
 func (s *Store) childRefs(ctx context.Context, q querier, exchangeID int64, forUpdate bool) ([]domain.ChildRef, error) {
-	query := `SELECT id, parent_user_id FROM children WHERE exchange_id = ? ORDER BY id`
+	// Children of banned parents stay registered but are left out of the distribution.
+	query := `SELECT c.id, c.parent_user_id FROM children c JOIN users u ON u.id = c.parent_user_id
+		WHERE c.exchange_id = ? AND u.banned_at IS NULL ORDER BY c.id`
 	if forUpdate {
-		query += ` FOR UPDATE`
+		query += ` FOR UPDATE OF c`
 	}
 	rows, err := q.QueryContext(ctx, query, exchangeID)
 	if err != nil {
@@ -427,8 +224,9 @@ func (s *Store) Distribute(ctx context.Context, exchangeID int64, plan func([]do
 // ---------- assignments ----------
 
 type Assignment struct {
-	ID     int64
-	Status domain.AssignmentStatus
+	ID         int64
+	ExchangeID int64
+	Status     domain.AssignmentStatus
 
 	ChildID        int64
 	ChildFirstName string
@@ -463,7 +261,7 @@ func (a Assignment) PickupState() domain.PickupState {
 }
 
 const assignmentSelect = `
-	SELECT a.id, a.status,
+	SELECT a.id, a.exchange_id, a.status,
 		c.id, c.first_name, c.last_name, c.age, c.gender, c.wishes,
 		p.id, p.tg_id, p.tg_username, p.first_name, p.last_name, p.phone, p.pvz_address,
 		g.id, g.tg_id, g.tg_username, g.first_name, g.last_name, g.phone, g.pvz_address,
@@ -477,7 +275,7 @@ const assignmentSelect = `
 func scanAssignment(row interface{ Scan(...any) error }) (Assignment, error) {
 	var a Assignment
 	var expected, ordered, arrived, received, codeSent, codeValid, codeReq sql.NullTime
-	err := row.Scan(&a.ID, &a.Status,
+	err := row.Scan(&a.ID, &a.ExchangeID, &a.Status,
 		&a.ChildID, &a.ChildFirstName, &a.ChildLastName, &a.ChildAge, &a.ChildGender, &a.ChildWishes,
 		&a.Parent.ID, &a.Parent.TgID, &a.Parent.TgUsername, &a.Parent.FirstName, &a.Parent.LastName, &a.Parent.Phone, &a.Parent.PVZAddress,
 		&a.Giver.ID, &a.Giver.TgID, &a.Giver.TgUsername, &a.Giver.FirstName, &a.Giver.LastName, &a.Giver.Phone, &a.Giver.PVZAddress,
@@ -538,6 +336,11 @@ func (s *Store) AssignmentsByGiver(ctx context.Context, exchangeID, giverID int6
 
 func (s *Store) AssignmentsByParent(ctx context.Context, exchangeID, parentID int64) ([]Assignment, error) {
 	return s.listAssignments(ctx, "a.exchange_id = ? AND c.parent_user_id = ?", exchangeID, parentID)
+}
+
+// AssignmentsOfUser lists every gift the user gave or their children received, across all exchanges.
+func (s *Store) AssignmentsOfUser(ctx context.Context, userID int64) ([]Assignment, error) {
+	return s.listAssignments(ctx, "a.giver_user_id = ? OR c.parent_user_id = ?", userID, userID)
 }
 
 func (s *Store) AssignmentsByExchange(ctx context.Context, exchangeID int64) ([]Assignment, error) {

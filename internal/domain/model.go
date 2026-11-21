@@ -18,3 +18,11 @@ const (
 	AssignmentArrived  AssignmentStatus = "arrived"
 	AssignmentReceived AssignmentStatus = "received"
 )
+
+type ViolationKind string
+
+const (
+	ViolationOrderOverdue    ViolationKind = "order_overdue"
+	ViolationDeliveryOverdue ViolationKind = "delivery_overdue"
+	ViolationManual          ViolationKind = "manual"
+)

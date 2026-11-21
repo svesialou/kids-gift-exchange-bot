@@ -2,23 +2,20 @@ package webapp
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
-
 	"github.com/svesialou/kids-gift-exchange-bot/internal/bot"
 	"github.com/svesialou/kids-gift-exchange-bot/internal/config"
 	"github.com/svesialou/kids-gift-exchange-bot/internal/domain"
 	"github.com/svesialou/kids-gift-exchange-bot/internal/store"
+	"github.com/svesialou/kids-gift-exchange-bot/internal/store/storetest"
 )
 
 type fakeAdmin struct{ actions []string }
@@ -27,47 +24,24 @@ func (f *fakeAdmin) ChangeExchangeStatus(_ context.Context, action string) (doma
 	f.actions = append(f.actions, action)
 	return "", &bot.ActionError{Msg: "Нельзя: сейчас «черновик»."}
 }
-func (f *fakeAdmin) NewExchange(context.Context) error { return nil }
+func (f *fakeAdmin) NewExchange(context.Context, bot.Settings) error { return nil }
 func (f *fakeAdmin) PreviewDistribution(context.Context) (bot.DistributionPreview, error) {
 	return bot.DistributionPreview{Families: 1, Children: 2}, nil
 }
-func (f *fakeAdmin) Distribute(context.Context) (int, error)            { return 0, nil }
-func (f *fakeAdmin) RemindNow(context.Context) (int, error)             { return 0, nil }
-func (f *fakeAdmin) Reassign(context.Context, int64, int64) error       { return nil }
-func (f *fakeAdmin) Broadcast(context.Context, string) (int, error)     { return 0, nil }
-func (f *fakeAdmin) Settings() bot.Settings                             { return bot.Settings{BudgetMax: 25, Currency: "BYN"} }
-func (f *fakeAdmin) UpdateSettings(context.Context, bot.Settings) error { return nil }
-func (f *fakeAdmin) InviteLink() string                                 { return "https://t.me/test_bot?start=x" }
-
-func testStore(t *testing.T) *store.Store {
-	t.Helper()
-	root := os.Getenv("TEST_MYSQL_DSN")
-	if root == "" {
-		t.Skip("TEST_MYSQL_DSN not set")
-	}
-	ctx := context.Background()
-	admin, err := sql.Open("mysql", root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	name := fmt.Sprintf("kge_web_%d", time.Now().UnixNano())
-	if _, err := admin.ExecContext(ctx, "CREATE DATABASE "+name+" CHARACTER SET utf8mb4"); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_, _ = admin.ExecContext(ctx, "DROP DATABASE "+name)
-		_ = admin.Close()
-	})
-	st, err := store.Open(ctx, root+name+"?parseTime=true&loc=UTC&multiStatements=true&charset=utf8mb4")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	if _, err := st.Migrate(); err != nil {
-		t.Fatal(err)
-	}
-	return st
+func (f *fakeAdmin) Distribute(context.Context) (int, error)        { return 0, nil }
+func (f *fakeAdmin) RemindNow(context.Context) (int, error)         { return 0, nil }
+func (f *fakeAdmin) Reassign(context.Context, int64, int64) error   { return nil }
+func (f *fakeAdmin) Broadcast(context.Context, string) (int, error) { return 0, nil }
+func (f *fakeAdmin) EffectiveSettings(ex store.Exchange) bot.Settings {
+	return bot.Settings{Title: "Обмен", BudgetMax: 25, Currency: "BYN"}
 }
+func (f *fakeAdmin) SetBanned(context.Context, int64, bool, string) error     { return nil }
+func (f *fakeAdmin) AddViolation(context.Context, int64, int64, string) error { return nil }
+func (f *fakeAdmin) SetViolationDismissed(context.Context, int64, bool) error { return nil }
+func (f *fakeAdmin) UpdateSettings(context.Context, bot.Settings) error       { return nil }
+func (f *fakeAdmin) InviteLink() string                                       { return "https://t.me/test_bot?start=x" }
+
+func testStore(t *testing.T) *store.Store { return storetest.New(t) }
 
 func TestPanelAccessAndState(t *testing.T) {
 	st := testStore(t)
@@ -87,7 +61,7 @@ func TestPanelAccessAndState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := config.Config{TelegramToken: testToken, AdminIDs: []int64{42}, GiftBudgetMax: 25, GiftCurrency: "BYN", StuckAfter: 96 * time.Hour}
+	cfg := config.Config{Location: time.UTC, TelegramToken: testToken, AdminIDs: []int64{42}, GiftBudgetMax: 25, GiftCurrency: "BYN", StuckAfter: 96 * time.Hour}
 	admin := &fakeAdmin{}
 	srv := httptest.NewServer(New(cfg, st, admin).Handler())
 	defer srv.Close()
@@ -145,7 +119,47 @@ func TestPanelAccessAndState(t *testing.T) {
 		t.Fatalf("unknown action: want 400, got %d", code)
 	}
 
-	res, err := http.Get(srv.URL + "/")
+	code, _ = do("GET", "/api/exchanges/999", initData(42), "")
+	if code != http.StatusNotFound {
+		t.Fatalf("unknown exchange: want 404, got %d", code)
+	}
+	if code, _ := do("POST", "/api/settings", initData(42), `{"order_deadline":"13.12.2026","delivery_by":"2026-12-25"}`); code != http.StatusBadRequest {
+		t.Fatalf("malformed date: want 400, got %d", code)
+	}
+	if code, _ := do("GET", "/api/users", initData(7), ""); code != http.StatusForbidden {
+		t.Fatalf("user base is admin-only: want 403, got %d", code)
+	}
+
+	if err := st.AddManualViolation(ctx, ex.ID, anna.ID, "подарок не по бюджету"); err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest("GET", srv.URL+"/api/users", nil)
+	req.Header.Set("Authorization", "tma "+initData(42))
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var users []map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&users)
+	res.Body.Close()
+	flagged := 0
+	for _, u := range users {
+		if u["red_flag"] == true {
+			flagged++
+			if u["name"] != "Анна Петрова" {
+				t.Fatalf("wrong user flagged: %v", u)
+			}
+		}
+	}
+	if len(users) != 2 || flagged != 1 {
+		t.Fatalf("want 2 users with 1 red flag, got %d users, %d flagged", len(users), flagged)
+	}
+	code, detail := do("GET", fmt.Sprintf("/api/users/%d", anna.ID), initData(42), "")
+	if code != http.StatusOK || len(detail["violations"].([]any)) != 1 || len(detail["exchanges"].([]any)) != 1 {
+		t.Fatalf("user detail: %d %v", code, detail)
+	}
+
+	res, err = http.Get(srv.URL + "/")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -9,7 +9,7 @@
 </head>
 <body>
   <header class="top">
-    <div>
+    <div class="top-text">
       <div class="top-title" id="title">Обмен подарками</div>
       <div class="top-sub" id="subtitle">Загрузка…</div>
     </div>
@@ -17,16 +17,12 @@
   </header>
 
   <nav class="tabs" role="tablist">
-    <button class="tab active" data-tab="overview" type="button" role="tab">Обзор</button>
-    <button class="tab" data-tab="families" type="button" role="tab">Семьи</button>
-    <button class="tab" data-tab="gifts" type="button" role="tab">Подарки</button>
+    <button class="tab active" data-section="exchange" type="button" role="tab">Обмен</button>
+    <button class="tab" data-section="history" type="button" role="tab">История</button>
+    <button class="tab" data-section="people" type="button" role="tab">Люди</button>
   </nav>
 
-  <main>
-    <section id="tab-overview" class="tab-panel"></section>
-    <section id="tab-families" class="tab-panel" hidden></section>
-    <section id="tab-gifts" class="tab-panel" hidden></section>
-  </main>
+  <main id="view"></main>
 
   <div class="toast" id="toast" hidden></div>
   <script src="app.js"></script>

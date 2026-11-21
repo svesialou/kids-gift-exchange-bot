@@ -47,6 +47,8 @@ Organizers manage everything from a Telegram Mini App: the «Панель» menu
 - «Обмены»: the running exchange, planned ones and completed ones, plus «Создать обмен». Each exchange opens with its overview (stage, actions, invite, schedule and conditions, delete), «Семьи», «Подарки» with filters and reassigning, «Нарушения» with automatic and manual entries that can be dismissed.
 - «Люди»: the user base across all exchanges with participation counts, gifts given and active violations. A user with violations or a ban gets a red flag. The user card shows the whole history, sends a personal message from the bot, and bans or unbans: a banned user cannot add children and is left out of distributions. In selection mode organizers tick several people to message, ban or unban them at once.
 
+- «Тексты»: every text participants see (messages, reminders, statuses, button labels), grouped, with search and a «only changed» filter. Organizers edit them in place; `**bold**` and `` `code` `` are the only markup, and `{placeholders}` are limited to the ones each text supports. Saving checks unknown placeholders, single-line buttons and unique menu labels; any text can be reset to the original. Overrides live in the `bot_texts` table; defaults are in `internal/texts/catalog.go`. Organizer-only messages (admin notifications and refusals) are not part of the editor.
+
 The bot serves the panel and its API on `HTTP_ADDR` when `WEBAPP_URL` is set. Every API call carries Telegram `initData`; the server checks its HMAC signature with the bot token, rejects data older than 24 hours and lets through only ids from `ADMIN_IDS`. Panel actions go through the same code as the chat commands, so participants get the same Telegram notifications.
 
 ## Admin commands

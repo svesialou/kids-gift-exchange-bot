@@ -2,7 +2,6 @@ package bot
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -33,25 +32,26 @@ func (b *Bot) showChildren(ctx context.Context, user store.User) error {
 	open := ex.Status == domain.ExchangeOpen
 
 	var sb strings.Builder
-	sb.WriteString("<b>Мои дети</b>\n\n")
+	sb.WriteString(b.tx("children.title") + "\n\n")
 	if len(children) == 0 {
-		sb.WriteString("Пока никого не добавлено.\n")
+		sb.WriteString(b.tx("children.empty") + "\n")
 	}
 	var buttons []tgbotapi.InlineKeyboardButton
 	for i, c := range children {
-		fmt.Fprintf(&sb, "%d. %s %s, %s, %s\n", i+1, esc(c.FirstName), esc(c.LastName), ageText(c.Age), genderText(c.Gender))
+		sb.WriteString(b.tx("children.item", "n", strconv.Itoa(i+1), "child_full", c.FirstName+" "+c.LastName,
+			"age", ageText(c.Age), "gender", genderText(c.Gender)) + "\n")
 		if c.Wishes != "" {
-			fmt.Fprintf(&sb, "   Пожелания: %s\n", esc(c.Wishes))
+			sb.WriteString(b.tx("children.wishes", "wishes", c.Wishes) + "\n")
 		}
 		if open {
-			buttons = append(buttons, button("❌ Удалить: "+c.FirstName, "delc", c.ID))
+			buttons = append(buttons, button(b.label("btn.delete_child", "child", c.FirstName), "delc", c.ID))
 		}
 	}
 	if open {
-		buttons = append(buttons, button("➕ Добавить ребёнка", "addc", 0))
-		sb.WriteString("\nПока регистрация открыта, список можно менять. Чтобы исправить данные ребёнка, удали его и добавь заново.")
+		buttons = append(buttons, button(b.label("btn.add_child"), "addc", 0))
+		sb.WriteString("\n" + b.tx("children.open_hint"))
 	} else {
-		sb.WriteString("\nРегистрация закрыта, список детей изменить нельзя.")
+		sb.WriteString("\n" + b.tx("children.closed_hint"))
 	}
 	b.send(user.TgID, sb.String(), inlineButtons(buttons...))
 	return nil
@@ -63,17 +63,17 @@ func (b *Bot) startChild(ctx context.Context, user store.User) error {
 		return err
 	}
 	if ex.Status != domain.ExchangeOpen {
-		b.send(user.TgID, "Регистрация закрыта, добавить ребёнка уже нельзя.", nil)
+		b.send(user.TgID, b.tx("children.add_closed"), nil)
 		return nil
 	}
 	if user.BannedAt != nil {
-		b.send(user.TgID, "Участие в обменах для тебя недоступно. Если это ошибка, напиши организатору.", nil)
+		b.send(user.TgID, b.tx("children.banned"), nil)
 		return nil
 	}
 	if err := b.store.SaveSession(ctx, user.TgID, store.Session{State: stateChildFirst, Data: map[string]string{}}); err != nil {
 		return err
 	}
-	b.send(user.TgID, "Как зовут ребёнка? Напиши <b>имя</b>.", cancelKeyboard())
+	b.send(user.TgID, b.tx("children.ask_first"), b.cancelKeyboard())
 	return nil
 }
 
@@ -84,52 +84,52 @@ func (b *Bot) handleChildStep(ctx context.Context, msg *tgbotapi.Message, sess s
 	switch sess.State {
 	case stateChildFirst:
 		if !validName(text) {
-			b.send(tgID, "Имя должно быть от 1 до 100 символов.", nil)
+			b.send(tgID, b.tx("children.bad_first"), nil)
 			return nil
 		}
 		sess.Data["first_name"] = text
 		sess.State = stateChildLast
-		b.send(tgID, "<b>Фамилия</b> ребёнка?", nil)
+		b.send(tgID, b.tx("children.ask_last"), nil)
 
 	case stateChildLast:
 		if !validName(text) {
-			b.send(tgID, "Фамилия должна быть от 1 до 100 символов.", nil)
+			b.send(tgID, b.tx("children.bad_last"), nil)
 			return nil
 		}
 		sess.Data["last_name"] = text
 		sess.State = stateChildAge
-		b.send(tgID, "Сколько полных лет? Напиши число.", nil)
+		b.send(tgID, b.tx("children.ask_age"), nil)
 
 	case stateChildAge:
 		age, err := strconv.Atoi(text)
 		if err != nil || age < 0 || age > 17 {
-			b.send(tgID, "Напиши возраст числом от 0 до 17.", nil)
+			b.send(tgID, b.tx("children.bad_age"), nil)
 			return nil
 		}
 		sess.Data["age"] = text
 		sess.State = stateChildGender
-		b.send(tgID, "Мальчик или девочка?", stepKeyboard(btnBoy, btnGirl))
+		b.send(tgID, b.tx("children.ask_gender"), b.stepKeyboard(b.label("btn.boy"), b.label("btn.girl")))
 
 	case stateChildGender:
 		switch text {
-		case btnBoy:
+		case b.label("btn.boy"):
 			sess.Data["gender"] = "boy"
-		case btnGirl:
+		case b.label("btn.girl"):
 			sess.Data["gender"] = "girl"
 		default:
-			b.send(tgID, "Выбери кнопкой: мальчик или девочка.", nil)
+			b.send(tgID, b.tx("children.bad_gender"), nil)
 			return nil
 		}
 		sess.State = stateChildWishes
-		b.send(tgID, "Что ребёнок любит или о чём мечтает? Это поможет дарителю выбрать подарок. Можно пропустить.", stepKeyboard(btnSkip))
+		b.send(tgID, b.tx("children.ask_wishes"), b.stepKeyboard(b.label("btn.skip")))
 
 	case stateChildWishes:
 		wishes := text
-		if text == btnSkip {
+		if text == b.label("btn.skip") {
 			wishes = ""
 		}
 		if utf8.RuneCountInString(wishes) > 1000 {
-			b.send(tgID, "Слишком длинно, сократи до 1000 символов.", nil)
+			b.send(tgID, b.tx("children.long_wishes"), nil)
 			return nil
 		}
 		return b.saveChild(ctx, tgID, sess, wishes)
@@ -150,7 +150,7 @@ func (b *Bot) saveChild(ctx context.Context, tgID int64, sess store.Session, wis
 		return err
 	}
 	if ex.Status != domain.ExchangeOpen {
-		return b.showMenu(ctx, tgID, "Регистрация закрылась, ребёнка добавить не получилось.")
+		return b.showMenu(ctx, tgID, b.tx("children.closed_meanwhile"))
 	}
 	age, _ := strconv.Atoi(sess.Data["age"])
 	err = b.store.AddChild(ctx, ex.ID, store.Child{
@@ -164,7 +164,7 @@ func (b *Bot) saveChild(ctx context.Context, tgID int64, sess store.Session, wis
 	if err != nil {
 		return err
 	}
-	b.send(tgID, "Ребёнок добавлен ✅", mainMenu())
+	b.send(tgID, b.tx("children.added"), b.mainMenu())
 	return b.showChildren(ctx, user)
 }
 
@@ -178,7 +178,7 @@ func (b *Bot) deleteChild(ctx context.Context, user store.User, childID int64) e
 		return err
 	}
 	if !ok {
-		b.send(user.TgID, "Удалить не получилось: регистрация уже закрыта или ребёнок не найден.", nil)
+		b.send(user.TgID, b.tx("children.delete_failed"), nil)
 		return nil
 	}
 	return b.showChildren(ctx, user)

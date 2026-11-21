@@ -57,32 +57,28 @@ func (b *Bot) tick(ctx context.Context) error {
 }
 
 func (b *Bot) sendReminder(kind domain.ReminderKind, a store.Assignment) {
-	child := esc(a.ChildFirstName)
+	child := a.ChildFirstName
 	switch kind {
 	case domain.RemindGiverOrder:
-		b.sendGiverCard(a, fmt.Sprintf("⏰ Напоминание: подарок для <b>%s</b> нужно заказать %s.", child, b.orderDeadlineText()))
+		b.sendGiverCard(a, b.tx("remind.order", "child", child, "order_deadline", b.orderDeadlineText()))
 	case domain.RemindGiverArrivalCheck:
-		b.sendGiverCard(a, fmt.Sprintf("📦 Посылка для <b>%s</b> уже пришла в ПВЗ? Если да, нажми «Пришло в ПВЗ».", child))
+		b.sendGiverCard(a, b.tx("remind.arrival_check", "child", child))
 	case domain.RemindGiverCodePending:
-		b.send(a.Giver.TgID, fmt.Sprintf("🔔 Получатель ждёт код, чтобы забрать посылку для <b>%s</b>. Пришли сегодняшний код из приложения Wildberries.", child),
-			inlineButtons(button("🔑 Отправить код получения", "code", a.ID)))
+		b.send(a.Giver.TgID, b.tx("remind.code_pending", "child", child), inlineButtons(button(b.label("btn.send_code"), "code", a.ID)))
 	case domain.RemindGiverCodeExpired:
-		b.send(a.Giver.TgID, fmt.Sprintf("Вчерашний код для посылки <b>%s</b> не использовали, посылка всё ещё в ПВЗ. Когда получатель снова попросит, пришли новый код.", child),
-			inlineButtons(button("🔑 Отправить код получения", "code", a.ID)))
+		b.send(a.Giver.TgID, b.tx("remind.code_expired", "child", child), inlineButtons(button(b.label("btn.send_code"), "code", a.ID)))
 	case domain.RemindRecipientPickup:
-		b.send(a.Parent.TgID, fmt.Sprintf("📦 Посылка для <b>%s</b> ждёт в ПВЗ:\n%s\n\nКогда соберёшься забирать, нажми «Иду забирать», и даритель пришлёт код на сегодня.",
-			child, esc(a.Parent.PVZAddress)),
-			inlineButtons(button("🚶 Иду забирать, нужен код", "pick", a.ID)))
+		b.send(a.Parent.TgID, b.tx("remind.pickup", "child", child, "pvz", a.Parent.PVZAddress), inlineButtons(button(b.label("btn.going"), "pick", a.ID)))
 	case domain.RemindRecipientCodeToday:
-		b.send(a.Parent.TgID, fmt.Sprintf("⏳ Код для посылки <b>%s</b> действует только до конца дня. Не успеваешь? Завтра нажми «Иду забирать», и даритель пришлёт новый.", child),
-			inlineButtons(button("🔑 Показать код", "pick", a.ID), button("✅ Забрал(а)", "got", a.ID)))
+		b.send(a.Parent.TgID, b.tx("remind.code_today", "child", child),
+			inlineButtons(button(b.label("btn.show_code"), "pick", a.ID), button(b.label("btn.received"), "got", a.ID)))
 	case domain.RemindAdminStuck:
 		since := ""
 		if a.ArrivedAt != nil {
 			since = " с " + b.localDate(*a.ArrivedAt)
 		}
 		b.notifyAdmins(fmt.Sprintf("⚠️ Посылка для %s %s [child %d] лежит в ПВЗ%s и не забрана.\nРодитель: %s %s%s, %s\nДаритель: %s %s%s",
-			child, esc(a.ChildLastName), a.ChildID, since,
+			esc(child), esc(a.ChildLastName), a.ChildID, since,
 			esc(a.Parent.FirstName), esc(a.Parent.LastName), usernameSuffix(a.Parent), esc(a.Parent.Phone),
 			esc(a.Giver.FirstName), esc(a.Giver.LastName), usernameSuffix(a.Giver)))
 	}

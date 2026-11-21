@@ -17,19 +17,7 @@ import (
 	"github.com/svesialou/kids-gift-exchange-bot/internal/config"
 	"github.com/svesialou/kids-gift-exchange-bot/internal/domain"
 	"github.com/svesialou/kids-gift-exchange-bot/internal/store"
-)
-
-const (
-	btnProfile  = "👤 Мой профиль"
-	btnChildren = "👶 Мои дети"
-	btnGive     = "🎁 Кому я дарю"
-	btnReceive  = "📦 Подарки моим детям"
-	btnRules    = "ℹ️ Как это работает"
-	btnCancel   = "Отмена"
-	btnSkip     = "Пропустить"
-	btnDontKnow = "Не знаю"
-	btnBoy      = "Мальчик"
-	btnGirl     = "Девочка"
+	"github.com/svesialou/kids-gift-exchange-bot/internal/texts"
 )
 
 type Bot struct {
@@ -40,6 +28,7 @@ type Bot struct {
 	now    func() time.Time
 
 	settings atomic.Pointer[Settings]
+	texts    *texts.Service
 }
 
 func New(api *tgbotapi.BotAPI, st *store.Store, cfg config.Config) *Bot {
@@ -55,9 +44,19 @@ func New(api *tgbotapi.BotAPI, st *store.Store, cfg config.Config) *Bot {
 			CodePendingAfter: cfg.CodePendingAfter,
 			StuckAfter:       cfg.StuckAfter,
 		},
-		now: time.Now,
+		now:   time.Now,
+		texts: texts.New(st),
 	}
 }
+
+// Texts exposes the editable participant texts to the admin panel.
+func (b *Bot) Texts() *texts.Service { return b.texts }
+
+// tx renders a participant text as Telegram HTML; kv are placeholder name, value pairs.
+func (b *Bot) tx(key string, kv ...string) string { return b.texts.Render(key, kv...) }
+
+// label renders a button text.
+func (b *Bot) label(key string, kv ...string) string { return b.texts.Plain(key, kv...) }
 
 func (b *Bot) Run(ctx context.Context) error {
 	_, err := b.api.Request(tgbotapi.NewSetMyCommands(
@@ -106,7 +105,7 @@ func (b *Bot) handleUpdate(ctx context.Context, upd tgbotapi.Update) {
 	}
 	if err != nil {
 		slog.Error("update failed", "chat_id", chatID, "error", err)
-		b.send(chatID, "Что-то пошло не так. Попробуй ещё раз или напиши организатору.", nil)
+		b.send(chatID, b.tx("common.error"), nil)
 	}
 }
 
@@ -127,18 +126,18 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) error {
 				return err
 			}
 		}
-		return b.showMenu(ctx, tgID, "Не знаю такой команды.")
+		return b.showMenu(ctx, tgID, b.tx("common.unknown_command"))
 	}
 
 	text := strings.TrimSpace(msg.Text)
-	if text == btnCancel {
+	if text == b.label("btn.cancel") {
 		return b.cancel(ctx, tgID)
 	}
-	if isMenuButton(text) {
+	if key, ok := b.texts.MenuKey(text); ok {
 		if err := b.store.SaveSession(ctx, tgID, store.Session{}); err != nil {
 			return err
 		}
-		return b.handleMenuButton(ctx, tgID, text)
+		return b.handleMenuButton(ctx, tgID, key)
 	}
 
 	sess, err := b.store.Session(ctx, tgID)
@@ -148,7 +147,7 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) error {
 	if sess.State != "" {
 		return b.handleState(ctx, msg, sess)
 	}
-	return b.showMenu(ctx, tgID, "Выбери действие в меню.")
+	return b.showMenu(ctx, tgID, b.tx("common.choose_menu"))
 }
 
 func (b *Bot) handleState(ctx context.Context, msg *tgbotapi.Message, sess store.Session) error {
@@ -165,33 +164,25 @@ func (b *Bot) handleState(ctx context.Context, msg *tgbotapi.Message, sess store
 	return b.cancel(ctx, msg.From.ID)
 }
 
-func isMenuButton(text string) bool {
-	switch text {
-	case btnProfile, btnChildren, btnGive, btnReceive, btnRules:
-		return true
-	}
-	return false
-}
-
-func (b *Bot) handleMenuButton(ctx context.Context, tgID int64, text string) error {
+func (b *Bot) handleMenuButton(ctx context.Context, tgID int64, key string) error {
 	user, err := b.store.UserByTG(ctx, tgID)
 	if errors.Is(err, store.ErrNotFound) {
-		b.send(tgID, "Сначала нужно зарегистрироваться: нажми /start.", tgbotapi.NewRemoveKeyboard(true))
+		b.send(tgID, b.tx("common.need_start"), tgbotapi.NewRemoveKeyboard(true))
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	switch text {
-	case btnProfile:
+	switch key {
+	case "btn.profile":
 		return b.showProfile(ctx, user)
-	case btnChildren:
+	case "btn.children":
 		return b.showChildren(ctx, user)
-	case btnGive:
+	case "btn.give":
 		return b.showGiverCards(ctx, user)
-	case btnReceive:
+	case "btn.receive":
 		return b.showRecipientCards(ctx, user)
-	case btnRules:
+	case "btn.rules":
 		b.send(tgID, b.rulesText(), nil)
 	}
 	return nil
@@ -206,7 +197,7 @@ func (b *Bot) handleCallback(ctx context.Context, cq *tgbotapi.CallbackQuery) er
 
 	user, err := b.store.UserByTG(ctx, tgID)
 	if errors.Is(err, store.ErrNotFound) {
-		b.send(tgID, "Сначала нужно зарегистрироваться: нажми /start.", nil)
+		b.send(tgID, b.tx("common.need_start"), nil)
 		return nil
 	}
 	if err != nil {
@@ -240,44 +231,45 @@ func (b *Bot) cancel(ctx context.Context, tgID int64) error {
 	if err := b.store.SaveSession(ctx, tgID, store.Session{}); err != nil {
 		return err
 	}
-	return b.showMenu(ctx, tgID, "Отменено.")
+	return b.showMenu(ctx, tgID, b.tx("common.cancelled"))
 }
 
 func (b *Bot) showMenu(ctx context.Context, tgID int64, text string) error {
 	_, err := b.store.UserByTG(ctx, tgID)
 	if errors.Is(err, store.ErrNotFound) {
-		b.send(tgID, text+"\nЧтобы участвовать, нажми /start.", tgbotapi.NewRemoveKeyboard(true))
+		b.send(tgID, text+"\n"+b.tx("common.press_start"), tgbotapi.NewRemoveKeyboard(true))
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	b.send(tgID, text, mainMenu())
+	b.send(tgID, text, b.mainMenu())
 	return nil
 }
 
-func mainMenu() tgbotapi.ReplyKeyboardMarkup {
+func (b *Bot) mainMenu() tgbotapi.ReplyKeyboardMarkup {
+	key := func(k string) tgbotapi.KeyboardButton { return tgbotapi.NewKeyboardButton(b.label(k)) }
 	kb := tgbotapi.NewReplyKeyboard(
-		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton(btnGive), tgbotapi.NewKeyboardButton(btnReceive)),
-		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton(btnChildren), tgbotapi.NewKeyboardButton(btnProfile)),
-		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton(btnRules)),
+		tgbotapi.NewKeyboardButtonRow(key("btn.give"), key("btn.receive")),
+		tgbotapi.NewKeyboardButtonRow(key("btn.children"), key("btn.profile")),
+		tgbotapi.NewKeyboardButtonRow(key("btn.rules")),
 	)
 	kb.ResizeKeyboard = true
 	return kb
 }
 
-func stepKeyboard(buttons ...string) tgbotapi.ReplyKeyboardMarkup {
+func (b *Bot) stepKeyboard(buttons ...string) tgbotapi.ReplyKeyboardMarkup {
 	var row []tgbotapi.KeyboardButton
 	for _, t := range buttons {
 		row = append(row, tgbotapi.NewKeyboardButton(t))
 	}
-	kb := tgbotapi.NewReplyKeyboard(row, tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton(btnCancel)))
+	kb := tgbotapi.NewReplyKeyboard(row, tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton(b.label("btn.cancel"))))
 	kb.ResizeKeyboard = true
 	return kb
 }
 
-func cancelKeyboard() tgbotapi.ReplyKeyboardMarkup {
-	kb := tgbotapi.NewReplyKeyboard(tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton(btnCancel)))
+func (b *Bot) cancelKeyboard() tgbotapi.ReplyKeyboardMarkup {
+	kb := tgbotapi.NewReplyKeyboard(tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton(b.label("btn.cancel"))))
 	kb.ResizeKeyboard = true
 	return kb
 }
@@ -377,16 +369,8 @@ func genderText(g string) string {
 }
 
 func (b *Bot) rulesText() string {
-	return fmt.Sprintf(`<b>Как это работает</b>
-
-1. Регистрируешься: имя, фамилия, телефон и адрес ПВЗ Wildberries, куда удобно забирать посылки.
-2. Добавляешь детей, которые участвуют в обмене.
-3. Когда регистрация закроется, бот распределит детей: твоя семья дарит столько подарков, сколько детей привела, и никогда не дарит своим.
-4. В «%s» увидишь, кому даришь. Заказываешь подарок %s на ПВЗ получателя %s.
-5. Когда посылка придёт, нажимаешь «Пришло в ПВЗ». Получатель попросит код, и ты присылаешь его из приложения WB текстом или скриншотом QR.
-6. Код живёт только один день. Если посылку не забрали, получатель запросит новый код, а бот напомнит обоим.
-7. Цель: все дети получают подарки до %s.`,
-		btnGive, b.budgetText(), b.orderDeadlineText(), b.deliveryText())
+	return b.tx("common.rules", "btn_give", b.label("btn.give"), "budget", b.budgetText(),
+		"order_deadline", b.orderDeadlineText(), "delivery", b.deliveryText())
 }
 
 func (b *Bot) localDate(t time.Time) string {

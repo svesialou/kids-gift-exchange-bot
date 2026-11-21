@@ -33,8 +33,8 @@ const PEOPLE_FILTERS = [["all", "Все"], ["flag", "🚩 С нарушения�
 
 // view describes what is on screen; back returns to the screen it was opened from.
 let view = { section: "exchanges", exchangeId: null, sub: "overview", userId: null, back: null };
-const ui = { giftFilter: "all", query: "", peopleFilter: "all", selecting: false, selected: new Set() };
-const data = { exchange: null, exchanges: null, people: null, user: null };
+const ui = { giftFilter: "all", query: "", peopleFilter: "all", selecting: false, selected: new Set(), changedOnly: false };
+const data = { exchange: null, exchanges: null, people: null, user: null, texts: null };
 
 // ---------- helpers ----------
 
@@ -213,6 +213,7 @@ async function load() {
     else if (view.section === "exchange") data.exchange = await api("/api/exchanges/" + view.exchangeId);
     else if (view.section === "people") data.people = await api("/api/users");
     else if (view.section === "user") data.user = await api("/api/users/" + view.userId);
+    else if (view.section === "texts") data.texts = await api("/api/texts");
     render();
   } catch (e) {
     document.getElementById("subtitle").textContent = "";
@@ -241,6 +242,10 @@ function render() {
     title.textContent = "Люди";
     subtitle.textContent = "Зарегистрировано: " + data.people.length;
     nodes = renderPeople();
+  } else if (view.section === "texts") {
+    title.textContent = "Тексты бота";
+    subtitle.textContent = "Изменено: " + data.texts.filter((t) => t.changed).length + " из " + data.texts.length;
+    nodes = renderTexts();
   } else if (view.section === "user") {
     title.textContent = data.user.user.name;
     subtitle.textContent = "Карточка участника";
@@ -902,6 +907,59 @@ function renderUser() {
     ));
   }
   return out;
+}
+
+// ---------- texts ----------
+
+function renderTexts() {
+  const help = card(
+    h("h3", null, "Как редактировать"),
+    h("div", { class: "muted" }, "Это всё, что бот пишет участникам. **текст** выделяется жирным, `текст` моноширинным. Подстановки в фигурных скобках бот заменит сам, у каждого текста свой список. Кнопки меню должны отличаться друг от друга."),
+  );
+  const chips = h("div", { class: "chips" },
+    h("button", {
+      class: "chip" + (ui.changedOnly ? " active" : ""), type: "button",
+      onclick: () => { ui.changedOnly = !ui.changedOnly; render(); },
+    }, "Только изменённые"));
+  const list = h("div", null);
+  const fill = () => {
+    const items = data.texts.filter((t) => (!ui.changedOnly || t.changed) && matches([t.title, t.value, t.group]));
+    const nodes = [];
+    let group = "";
+    for (const t of items) {
+      if (t.group !== group) {
+        group = t.group;
+        nodes.push(h("h4", { class: "section-title" }, group));
+      }
+      nodes.push(textCard(t));
+    }
+    list.replaceChildren(...(nodes.length ? nodes : [empty(ui.changedOnly ? "Изменённых текстов нет" : "Ничего не нашли")]));
+  };
+  fill();
+  return [help, chips, searchBox("Поиск по названию или тексту", fill), list];
+}
+
+function textCard(t) {
+  const input = t.button
+    ? h("input", { type: "text", maxlength: "64", value: t.value })
+    : h("textarea", { class: "text-edit" }, t.value);
+  const key = encodeURIComponent(t.key);
+  return card(
+    h("div", { class: "row" }, h("h3", null, t.title), h("span", { class: "spacer" }), t.changed ? h("span", { class: "badge ordered" }, "изменён") : null),
+    t.vars.length ? h("div", { class: "muted" }, "Подстановки: " + t.vars.map((v) => "{" + v + "}").join(" ")) : null,
+    h("div", { class: "line" }, input),
+    t.changed ? h("div", { class: "muted line" }, "Исходный: " + t.default) : null,
+    h("div", { class: "row" },
+      h("button", {
+        class: "btn small", type: "button",
+        onclick: (ev) => run(`/api/texts/${key}`, { value: input.value }, null, ev.currentTarget),
+      }, "Сохранить"),
+      t.changed ? h("button", {
+        class: "btn small secondary", type: "button",
+        onclick: (ev) => run(`/api/texts/${key}/reset`, {}, "Вернуть исходный текст?", ev.currentTarget),
+      }, "Вернуть исходный") : null,
+    ),
+  );
 }
 
 // ---------- boot ----------

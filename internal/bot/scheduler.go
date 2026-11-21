@@ -26,6 +26,9 @@ func (b *Bot) RunScheduler(ctx context.Context) {
 }
 
 func (b *Bot) tick(ctx context.Context) error {
+	if err := b.advanceSchedule(ctx, b.now()); err != nil {
+		return err
+	}
 	ex, err := b.store.CurrentExchange(ctx)
 	if err != nil {
 		return err

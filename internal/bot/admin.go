@@ -59,6 +59,10 @@ func (b *Bot) ChangeExchangeStatus(ctx context.Context, action string) (domain.E
 	if err != nil {
 		return "", err
 	}
+	// Reopening after the scheduled close would be undone by the scheduler on its next tick.
+	if action == "open" && ex.RegistrationClosesAt != nil && !ex.RegistrationClosesAt.After(b.now()) {
+		return "", refuse("Дата закрытия регистрации уже прошла. Сначала перенесите её в условиях обмена.")
+	}
 	ok, err = b.store.TransitionExchange(ctx, ex.ID, t.to, t.from...)
 	if err != nil {
 		return "", err
@@ -66,21 +70,60 @@ func (b *Bot) ChangeExchangeStatus(ctx context.Context, action string) (domain.E
 	if !ok {
 		return "", refuse("Нельзя: сейчас «%s».", StatusTitle(ex.Status))
 	}
+	if t.to == domain.ExchangeCompleted {
+		if err := b.onExchangeCompleted(ctx, ex); err != nil {
+			return t.to, err
+		}
+	}
 	return t.to, nil
 }
 
-func (b *Bot) NewExchange(ctx context.Context) error {
-	ex, err := b.store.CurrentExchange(ctx)
+// SetBanned blocks a user from adding children and from distributions; existing gifts stay as they are.
+func (b *Bot) SetBanned(ctx context.Context, userID int64, banned bool, reason string) error {
+	reason = strings.TrimSpace(reason)
+	if banned && reason == "" {
+		return refuse("Укажите причину блокировки.")
+	}
+	if len([]rune(reason)) > 500 {
+		return refuse("Причина: не больше 500 символов.")
+	}
+	ok, err := b.store.SetBanned(ctx, userID, banned, reason, b.now())
 	if err != nil {
 		return err
 	}
-	if ex.Status != domain.ExchangeCompleted {
-		return refuse("Новый обмен можно начать только после завершения текущего.")
+	if !ok {
+		return refuse("Пользователь не найден.")
 	}
-	if err := b.store.CreateExchange(ctx); err != nil {
+	return nil
+}
+
+func (b *Bot) AddViolation(ctx context.Context, exchangeID, userID int64, comment string) error {
+	comment = strings.TrimSpace(comment)
+	if comment == "" || len([]rune(comment)) > 500 {
+		return refuse("Опишите нарушение (до 500 символов).")
+	}
+	if _, err := b.store.ExchangeByID(ctx, exchangeID); errors.Is(err, store.ErrNotFound) {
+		return refuse("Обмен не найден.")
+	} else if err != nil {
 		return err
 	}
-	return b.LoadSettings(ctx)
+	if _, err := b.store.UserByID(ctx, userID); errors.Is(err, store.ErrNotFound) {
+		return refuse("Пользователь не найден.")
+	} else if err != nil {
+		return err
+	}
+	return b.store.AddManualViolation(ctx, exchangeID, userID, comment)
+}
+
+func (b *Bot) SetViolationDismissed(ctx context.Context, id int64, dismissed bool) error {
+	ok, err := b.store.SetViolationDismissed(ctx, id, dismissed, b.now())
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return refuse("Нарушение не найдено.")
+	}
+	return nil
 }
 
 type DistributionPreview struct {
@@ -258,7 +301,7 @@ const adminHelp = `<b>Команды организатора</b>
 /reassign &lt;child_id&gt; &lt;user_id&gt; — передать ребёнка другому дарителю
 /broadcast &lt;текст&gt; — сообщение всем участникам
 /finish — завершить обмен
-/new_exchange — начать новый обмен после завершения`
+/new_exchange — новый обмен (создаётся в панели)`
 
 func (b *Bot) handleAdminCommand(ctx context.Context, msg *tgbotapi.Message, cmd, args string) (bool, error) {
 	tgID := msg.From.ID
@@ -274,9 +317,7 @@ func (b *Bot) handleAdminCommand(ctx context.Context, msg *tgbotapi.Message, cmd
 			b.send(tgID, "Готово: "+StatusTitle(to)+".", nil)
 		}
 	case "new_exchange":
-		if err = b.NewExchange(ctx); err == nil {
-			b.send(tgID, "Создан новый обмен. Открой регистрацию командой /open.", nil)
-		}
+		b.sendAdminPanelButton(tgID, "Новый обмен создаётся в панели: там задаются название, даты и бюджет.")
 	case "families":
 		err = b.adminFamilies(ctx, tgID)
 	case "distribute":

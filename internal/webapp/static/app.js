@@ -10,32 +10,35 @@ const STEPS = [
   ["draft", "Черновик"],
   ["registration_open", "Регистрация"],
   ["registration_closed", "Закрыта"],
-  ["distributed", "Распределено"],
-  ["completed", "Завершено"],
+  ["distributed", "Подарки"],
+  ["completed", "Завершён"],
 ];
 
-const GIFT_STATUS = {
-  assigned: "не заказан",
-  ordered: "заказан",
-  arrived: "в ПВЗ",
-  received: "получен",
+const GIFT_STATUS = { assigned: "не отправлен", ordered: "отправлен", arrived: "в ПВЗ", received: "получен" };
+
+const VIOLATION_KIND = {
+  order_overdue: "Не отправил подарок в срок",
+  delivery_overdue: "Подарок не пришёл к завершению",
+  manual: "Отмечено вручную",
 };
 
-const FILTERS = [
-  ["all", "Все"],
-  ["problems", "Требуют внимания"],
-  ["assigned", "Не заказано"],
-  ["ordered", "Заказано"],
-  ["arrived", "В ПВЗ"],
-  ["received", "Получено"],
+const GIFT_FILTERS = [
+  ["all", "Все"], ["problems", "Требуют внимания"], ["assigned", "Не отправлено"],
+  ["ordered", "Отправлено"], ["arrived", "В ПВЗ"], ["received", "Получено"],
 ];
 
-let state = null;
-let activeTab = "overview";
-let giftFilter = "all";
-let familyQuery = "";
+const EXCHANGE_SECTIONS = [["overview", "Обзор"], ["families", "Семьи"], ["gifts", "Подарки"], ["violations", "Нарушения"]];
 
-// h builds DOM nodes; strings always go through text nodes, so user data is never parsed as HTML.
+const PEOPLE_FILTERS = [["all", "Все"], ["flag", "🚩 С нарушениями"], ["banned", "Заблокированы"]];
+
+// view describes what is on screen; back returns to the screen it was opened from.
+let view = { section: "exchange", exchangeId: null, sub: "overview", userId: null, back: null };
+const ui = { giftFilter: "all", query: "", peopleFilter: "all" };
+const data = { exchange: null, history: null, people: null, user: null };
+
+// ---------- helpers ----------
+
+// h builds DOM nodes; strings always become text nodes, so user data is never parsed as HTML.
 function h(tag, attrs, ...children) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
@@ -81,21 +84,12 @@ async function api(path, body) {
     opts.body = JSON.stringify(body);
   }
   const res = await fetch(path, opts);
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || "Ошибка " + res.status);
-  return data;
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error || "Ошибка " + res.status);
+  return json;
 }
 
-async function load() {
-  try {
-    state = await api("/api/state");
-    render();
-  } catch (e) {
-    document.getElementById("subtitle").textContent = "";
-    showOnly(h("div", { class: "empty" }, e.message));
-  }
-}
-
+// run performs a write, shows the result and reloads the screen. Returns true on success.
 async function run(path, body, confirmText, button) {
   if (confirmText && !(await confirmAction(confirmText))) return false;
   if (button) button.disabled = true;
@@ -118,78 +112,234 @@ function action(name, confirmText) {
   return (ev) => run("/api/action", { action: name }, confirmText, ev.currentTarget);
 }
 
-function showOnly(node) {
-  const panel = document.getElementById("tab-" + activeTab);
-  panel.replaceChildren(node);
+function ageText(age) {
+  const m10 = age % 10, m100 = age % 100;
+  if (m10 === 1 && m100 !== 11) return age + " год";
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return age + " года";
+  return age + " лет";
 }
 
-// ---------- rendering ----------
+function fmtDate(value) {
+  if (!value) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value.slice(8, 10) + "." + value.slice(5, 7);
+  return new Date(value).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" });
+}
 
-function render() {
-  const ex = state.exchange;
-  document.getElementById("title").textContent = "Обмен #" + ex.id;
-  document.getElementById("subtitle").textContent = ex.title;
-  document.querySelector('[data-tab="families"]').textContent = "Семьи · " + state.families.length;
-  document.querySelector('[data-tab="gifts"]').textContent = "Подарки · " + state.assignments.length;
-  document.getElementById("tab-overview").replaceChildren(...renderOverview());
-  document.getElementById("tab-families").replaceChildren(...renderFamilies());
-  document.getElementById("tab-gifts").replaceChildren(...renderGifts());
+// fmtLocal shows a "YYYY-MM-DDTHH:MM" value that is already in the bot timezone.
+function fmtLocal(value) {
+  if (!value) return "";
+  return `${value.slice(8, 10)}.${value.slice(5, 7)} ${value.slice(11, 16)}`;
+}
+
+// localDay turns an ISO timestamp into YYYY-MM-DD in the device timezone, enough to compare with deadline dates.
+function localDay(value) {
+  const d = new Date(value);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
 function countBy(list, fn) {
   const out = {};
-  for (const x of list) {
-    const k = fn(x);
-    out[k] = (out[k] || 0) + 1;
-  }
+  for (const x of list) out[fn(x)] = (out[fn(x)] || 0) + 1;
   return out;
 }
 
-function renderOverview() {
-  const ex = state.exchange;
-  const idx = STEPS.findIndex(([s]) => s === ex.status);
-  const kids = state.families.reduce((n, f) => n + f.children.length, 0);
-
-  const progress = h("div", { class: "card" },
-    h("div", { class: "steps" }, STEPS.map((_, i) => h("div", { class: "step" + (i <= idx ? " done" : "") }))),
-    h("div", { class: "step-labels" }, STEPS.map(([, label]) => h("span", null, label))),
-  );
-
-  const stats = h("div", { class: "card" },
-    h("div", { class: "stats" },
-      h("div", { class: "stat" }, h("b", null, state.families.length), h("span", { class: "muted" }, "семей")),
-      h("div", { class: "stat" }, h("b", null, kids), h("span", { class: "muted" }, "детей")),
-    ),
-    state.without_children.length
-      ? h("div", { class: "muted line" }, "Зарегистрировались без детей: " + state.without_children.length)
-      : null,
-  );
-
-  return [progress, stageCard(ex.status), stats, inviteCard(), settingsCard(), broadcastCard()].filter(Boolean);
+function card(...children) {
+  return h("div", { class: "card" }, ...children);
 }
 
-function stageCard(status) {
-  const p = state.preview;
-  switch (status) {
+function field(label, input) {
+  return h("label", { class: "field" }, h("span", { class: "muted" }, label), input);
+}
+
+function contactLine(p) {
+  return h("div", { class: "row line" },
+    p.username ? h("a", { href: "https://t.me/" + p.username, target: "_blank" }, "@" + p.username) : null,
+    p.phone ? h("a", { href: "tel:" + p.phone.replace(/[^\d+]/g, "") }, p.phone) : null,
+  );
+}
+
+function personLink(p) {
+  return h("a", { href: "#", onclick: (ev) => { ev.preventDefault(); ev.stopPropagation(); openUser(p.id); } }, p.name);
+}
+
+function flags(p) {
+  return [
+    p.banned ? h("span", { class: "badge alert" }, "заблокирован") : null,
+    p.violations ? h("span", { class: "badge flag" }, "🚩 " + p.violations) : null,
+  ];
+}
+
+function empty(text) {
+  return h("div", { class: "empty" }, text);
+}
+
+function statBox(n, label) {
+  return h("div", { class: "stat" }, h("b", null, n || 0), h("span", { class: "muted" }, label));
+}
+
+// ---------- navigation & loading ----------
+
+function setSection(section) {
+  view = { section, exchangeId: null, sub: "overview", userId: null, back: null };
+  ui.query = "";
+  for (const b of document.querySelectorAll(".tab")) b.classList.toggle("active", b.dataset.section === section);
+  load();
+}
+
+function openExchange(id) {
+  view = { section: "exchange", exchangeId: id, sub: "overview", userId: null, back: { ...view } };
+  ui.query = "";
+  load();
+}
+
+function openUser(id) {
+  view = { section: "user", exchangeId: null, sub: null, userId: id, back: { ...view } };
+  load();
+}
+
+function goBack() {
+  view = view.back || { section: "exchange", exchangeId: null, sub: "overview", userId: null, back: null };
+  load();
+}
+
+async function load() {
+  try {
+    if (view.section === "exchange") {
+      data.exchange = await api(view.exchangeId ? "/api/exchanges/" + view.exchangeId : "/api/state");
+    } else if (view.section === "history") {
+      data.history = await api("/api/exchanges");
+    } else if (view.section === "people") {
+      data.people = await api("/api/users");
+    } else if (view.section === "user") {
+      data.user = await api("/api/users/" + view.userId);
+    }
+    render();
+  } catch (e) {
+    document.getElementById("subtitle").textContent = "";
+    document.getElementById("view").replaceChildren(empty(e.message));
+  }
+}
+
+function render() {
+  const title = document.getElementById("title");
+  const subtitle = document.getElementById("subtitle");
+  let nodes = [];
+  if (view.section === "exchange") {
+    const ex = data.exchange.exchange;
+    title.textContent = ex.settings.title;
+    subtitle.textContent = ex.status_title + (ex.current ? "" : " · архив");
+    nodes = renderExchange();
+  } else if (view.section === "history") {
+    title.textContent = "История обменов";
+    subtitle.textContent = "Всего: " + data.history.length;
+    nodes = renderHistory();
+  } else if (view.section === "people") {
+    title.textContent = "Люди";
+    subtitle.textContent = "Зарегистрировано: " + data.people.length;
+    nodes = renderPeople();
+  } else if (view.section === "user") {
+    title.textContent = data.user.user.name;
+    subtitle.textContent = "Карточка участника";
+    nodes = renderUser();
+  }
+  if (view.back) nodes.unshift(h("button", { class: "back", type: "button", onclick: goBack }, "← Назад"));
+  document.getElementById("view").replaceChildren(...nodes);
+}
+
+// ---------- exchange ----------
+
+function renderExchange() {
+  const d = data.exchange;
+  const counts = {
+    families: d.families.length,
+    gifts: d.assignments.length,
+    violations: d.violations.filter((v) => !v.dismissed).length,
+  };
+  const subtabs = h("div", { class: "chips" }, EXCHANGE_SECTIONS.map(([key, label]) =>
+    h("button", {
+      class: "chip" + (view.sub === key ? " active" : ""), type: "button",
+      onclick: () => { view.sub = key; ui.query = ""; render(); },
+    }, label + (key in counts ? " " + counts[key] : ""))));
+
+  const body = { overview: renderOverview, families: renderFamilies, gifts: renderGifts, violations: renderViolations }[view.sub]();
+  return [subtabs, ...body];
+}
+
+function renderOverview() {
+  const d = data.exchange;
+  const ex = d.exchange;
+  const idx = STEPS.findIndex(([s]) => s === ex.status);
+  const kids = d.families.reduce((n, f) => n + f.children.length, 0);
+  const out = [card(
+    h("div", { class: "steps" }, STEPS.map((_, i) => h("div", { class: "step" + (i <= idx ? " done" : "") }))),
+    h("div", { class: "step-labels" }, STEPS.map(([, label]) => h("span", null, label))),
+    scheduleLines(ex.settings),
+  )];
+
+  if (ex.current) out.push(stageCard(d));
+  out.push(card(
+    h("div", { class: "stats" },
+      statBox(d.families.length, "семей"), statBox(kids, "детей"),
+      statBox(d.assignments.filter((a) => a.status === "received").length + " / " + d.assignments.length, "подарков получено"),
+      statBox(d.violations.filter((v) => !v.dismissed).length, "нарушений"),
+    ),
+    d.without_children && d.without_children.length
+      ? h("div", { class: "muted line" }, "Зарегистрировались без детей: " + d.without_children.length)
+      : null,
+  ));
+
+  if (ex.current) {
+    if (ex.status === "registration_open") out.push(inviteCard());
+    out.push(settingsForm(ex.status === "completed" ? null : ex));
+    out.push(broadcastCard());
+  }
+  return out.filter(Boolean);
+}
+
+function scheduleLines(s) {
+  const line = (label, value) => h("div", { class: "kv" }, h("span", { class: "muted" }, label), h("span", null, value));
+  return h("div", { class: "line" },
+    line("Регистрация", s.registration_opens_at
+      ? `${fmtLocal(s.registration_opens_at)} – ${fmtLocal(s.registration_closes_at)}`
+      : "вручную"),
+    line("Отправить подарки до", fmtDate(s.order_deadline) || "—"),
+    line("Завершение", fmtDate(s.delivery_by) || "—"),
+    line("Бюджет", `до ${s.budget_max} ${s.currency}`),
+  );
+}
+
+function stageCard(d) {
+  const ex = d.exchange;
+  const s = ex.settings;
+  const p = d.preview;
+  const scheduled = !!s.registration_opens_at;
+  switch (ex.status) {
     case "draft":
-      return h("div", { class: "card" },
-        h("h3", null, "Регистрация ещё не открыта"),
-        h("div", { class: "muted" }, "После открытия родители смогут зарегистрироваться по ссылке-приглашению."),
-        h("button", { class: "btn", type: "button", onclick: action("open") }, "Открыть регистрацию"),
+      return card(
+        h("h3", null, scheduled ? "Регистрация откроется по расписанию" : "Регистрация ещё не открыта"),
+        h("div", { class: "muted" }, scheduled
+          ? `Бот откроет её ${fmtLocal(s.registration_opens_at)} и напишет вам.`
+          : "Задайте даты в условиях ниже или откройте регистрацию вручную."),
+        h("button", {
+          class: "btn" + (scheduled ? " secondary" : ""), type: "button",
+          onclick: action("open", scheduled ? "Открыть регистрацию сейчас, раньше расписания?" : null),
+        }, scheduled ? "Открыть сейчас" : "Открыть регистрацию"),
       );
     case "registration_open":
-      return h("div", { class: "card" },
+      return card(
         h("h3", null, "Идёт регистрация"),
-        h("div", { class: "muted" }, "Когда все семьи добавят детей, закройте регистрацию. Новых участников после этого не будет."),
-        h("button", { class: "btn", type: "button", onclick: action("close", "Закрыть регистрацию? Новые участники не смогут присоединиться.") }, "Закрыть регистрацию"),
+        h("div", { class: "muted" }, scheduled
+          ? `Закроется ${fmtLocal(s.registration_closes_at)}, сразу после этого бот распределит детей и разошлёт карточки.`
+          : "Когда все семьи добавят детей, закройте регистрацию."),
+        h("button", { class: "btn secondary", type: "button", onclick: action("close", "Закрыть регистрацию сейчас? Новые участники не смогут присоединиться.") }, "Закрыть сейчас"),
       );
     case "registration_closed":
-      return h("div", { class: "card" },
-        h("h3", null, "Готово к распределению"),
+      return card(
+        h("h3", null, "Регистрация закрыта"),
         h("div", null, `Семей: ${p.families}, детей: ${p.children}.`),
         p.possible
-          ? h("div", { class: "muted line" }, "Каждая семья дарит столько подарков, сколько детей привела, и не дарит своим. Распределение делается один раз, всем участникам придут карточки.")
-          : h("div", { class: "line", style: "color: var(--danger)" }, p.reason),
+          ? h("div", { class: "muted line" }, "Распределение делается один раз, всем участникам придут карточки.")
+          : h("div", { class: "line danger-text" }, p.reason),
         h("button", {
           class: "btn", type: "button", disabled: !p.possible,
           onclick: action("distribute", "Распределить детей? Отменить будет нельзя, участникам сразу придут карточки."),
@@ -197,89 +347,62 @@ function stageCard(status) {
         h("button", { class: "btn secondary", type: "button", onclick: action("open") }, "Открыть регистрацию снова"),
       );
     case "distributed": {
-      const total = state.assignments.length;
-      const c = countBy(state.assignments, (a) => a.status);
-      const problems = state.assignments.filter(isProblem).length;
+      const total = d.assignments.length;
+      const c = countBy(d.assignments, (a) => a.status);
       const done = c.received || 0;
-      return h("div", { class: "card" },
+      return card(
         h("h3", null, `Получено ${done} из ${total}`),
         h("div", { class: "progress" }, h("div", { style: `width: ${total ? (done * 100) / total : 0}%` })),
         h("div", { class: "stats" },
-          statBox(c.assigned, "не заказано"), statBox(c.ordered, "заказано"),
-          statBox(c.arrived, "в ПВЗ"), statBox(problems, "требуют внимания"),
+          statBox(c.assigned, "не отправлено"), statBox(c.ordered, "отправлено"),
+          statBox(c.arrived, "в ПВЗ"), statBox(d.assignments.filter(isProblem).length, "требуют внимания"),
         ),
-        h("button", { class: "btn secondary", type: "button", onclick: action("remind", "Отправить напоминания всем, кто ещё не заказал или не забрал посылку?") }, "Напомнить отстающим"),
-        h("button", { class: "btn danger", type: "button", onclick: action("finish", "Завершить обмен? Напоминания прекратятся.") }, "Завершить обмен"),
+        h("button", { class: "btn secondary", type: "button", onclick: action("remind", "Напомнить всем, кто ещё не отправил или не забрал посылку?") }, "Напомнить отстающим"),
+        h("button", { class: "btn danger", type: "button", onclick: action("finish", "Завершить обмен сейчас? Неполученные подарки запишутся в нарушения.") }, "Завершить сейчас"),
       );
     }
     case "completed":
-      return h("div", { class: "card" },
-        h("h3", null, "Обмен завершён"),
-        h("button", { class: "btn", type: "button", onclick: action("new_exchange", "Начать новый обмен? Текущий останется в истории.") }, "Начать новый обмен"),
-      );
+      return card(h("h3", null, "Обмен завершён"), h("div", { class: "muted" }, "Создайте следующий обмен в форме ниже, прошлые остаются в «Истории»."));
   }
   return null;
 }
 
-function statBox(n, label) {
-  return h("div", { class: "stat" }, h("b", null, n || 0), h("span", { class: "muted" }, label));
-}
-
-function budgetText(s) {
-  return `до ${s.budget_max} ${s.currency}`;
-}
-
-function inviteText() {
-  const s = state.settings;
+function inviteText(s) {
   const lines = [
-    "Приглашаем детей в новогодний обмен подарками 🎁",
-    "Каждая семья дарит подарки детям из других семей: бот подскажет, кому и на какой ПВЗ Wildberries заказать. Бюджет подарка " + budgetText(s) + ".",
+    `Приглашаем детей в обмен подарками «${s.title}» 🎁`,
+    `Каждая семья дарит подарки детям из других семей: бот подскажет, кому и на какой ПВЗ Wildberries заказать. Бюджет подарка до ${s.budget_max} ${s.currency}.`,
   ];
-  if (s.order_deadline && s.delivery_by) {
-    lines.push("Заказать подарок нужно до " + fmtDate(s.order_deadline) + ", все подарки дети получат до " + fmtDate(s.delivery_by) + ".");
-  }
+  if (s.registration_closes_at) lines.push("Регистрация до " + fmtLocal(s.registration_closes_at) + ".");
+  if (s.order_deadline) lines.push("Отправить подарок нужно до " + fmtDate(s.order_deadline) + ", все подарки дети получат до " + fmtDate(s.delivery_by) + ".");
   lines.push("Чтобы участвовать, откройте бота по ссылке и зарегистрируйтесь:");
   return lines.join("\n");
 }
 
-// shareInvite opens Telegram's own chat picker: the admin chooses contacts or groups and the message goes from their account.
-// The bot cannot message people who never started it, so this is the only way to reach new parents.
-function shareInvite(text) {
-  const link = "https://t.me/share/url?url=" + encodeURIComponent(state.invite) + "&text=" + encodeURIComponent(text);
-  if (tg && tg.openTelegramLink) tg.openTelegramLink(link);
-  else window.open(link, "_blank");
-}
-
 function inviteCard() {
-  const status = state.exchange.status;
-  if (status !== "registration_open" && status !== "draft") return null;
-  if (status === "draft") {
-    return h("div", { class: "card" },
-      h("h3", null, "Приглашение"),
-      h("div", { class: "muted" }, "Откройте регистрацию, чтобы отправлять приглашения: до этого бот не пустит новых участников."),
-    );
-  }
-  const text = h("textarea", null, inviteText());
-  const input = h("input", { value: state.invite, readonly: true });
-  return h("div", { class: "card" },
+  const d = data.exchange;
+  const text = h("textarea", null, inviteText(d.exchange.settings));
+  const input = h("input", { value: d.invite, readonly: true });
+  return card(
     h("h3", null, "Приглашение"),
-    h("div", { class: "muted" }, "Текст можно поправить. Ссылка добавится к сообщению автоматически."),
+    h("div", { class: "muted" }, "Текст можно поправить, ссылка добавится сама. Откроется выбор чатов Telegram."),
     h("div", { class: "line" }, text),
     h("button", {
       class: "btn", type: "button",
       onclick: () => {
         const value = text.value.trim();
         if (!value) return toast("Введите текст приглашения", true);
-        shareInvite(value);
+        // The bot cannot message people who never started it, so invitations go from the admin's account.
+        const link = "https://t.me/share/url?url=" + encodeURIComponent(d.invite) + "&text=" + encodeURIComponent(value);
+        if (tg && tg.openTelegramLink) tg.openTelegramLink(link);
+        else window.open(link, "_blank");
       },
     }, "Отправить приглашение"),
-    h("div", { class: "muted line" }, "Откроется выбор чатов Telegram: можно отметить несколько контактов или родительский чат."),
     h("div", { class: "line" }, input),
     h("button", {
       class: "btn small secondary", type: "button",
       onclick: async () => {
         try {
-          await navigator.clipboard.writeText(state.invite);
+          await navigator.clipboard.writeText(d.invite);
           toast("Ссылка скопирована");
         } catch {
           input.select();
@@ -290,38 +413,51 @@ function inviteCard() {
   );
 }
 
-function settingsCard() {
-  const s = state.settings;
+// settingsForm edits the current exchange, or creates the next one when ex is null.
+function settingsForm(ex) {
+  const prev = data.exchange.exchange.settings;
+  const s = ex ? ex.settings : { title: "", budget_max: prev.budget_max, currency: prev.currency };
+  const regLocked = !!ex && !["draft", "registration_open"].includes(ex.status);
+  const title = h("input", { type: "text", maxlength: "100", value: s.title || "", placeholder: "Например, Новый год 2027" });
   const budget = h("input", { type: "number", min: "1", max: "100000", step: "1", inputmode: "numeric", value: s.budget_max });
   const currency = h("input", { type: "text", maxlength: "10", value: s.currency });
-  const order = h("input", { type: "date", value: s.order_deadline });
-  const delivery = h("input", { type: "date", value: s.delivery_by });
-  const field = (label, input) => h("label", { class: "field" }, h("span", { class: "muted" }, label), input);
+  const opens = h("input", { type: "datetime-local", value: s.registration_opens_at || "", disabled: regLocked || (!!ex && ex.status === "registration_open") });
+  const closes = h("input", { type: "datetime-local", value: s.registration_closes_at || "", disabled: regLocked });
+  const order = h("input", { type: "date", value: s.order_deadline || "" });
+  const delivery = h("input", { type: "date", value: s.delivery_by || "" });
 
-  return h("div", { class: "card" },
-    h("h3", null, "Условия"),
+  return card(
+    h("h3", null, ex ? "Условия и расписание" : "Новый обмен"),
+    field("Название", title),
     h("div", { class: "field-row" }, field("Бюджет подарка, до", budget), field("Валюта", currency)),
-    field("Заказать подарок до", order),
-    field("Дети получают подарки до", delivery),
-    state.exchange.status === "distributed"
-      ? h("div", { class: "muted line" }, "Карточки уже разосланы. Новые условия попадут в следующие сообщения и напоминания, старые сообщения не изменятся.")
+    h("div", { class: "field-row even" }, field("Регистрация с", opens), field("Регистрация до", closes)),
+    h("div", { class: "muted" }, regLocked
+      ? "Регистрация уже прошла, её даты не меняются."
+      : "Пустые даты регистрации значат ручное управление. После закрытия по расписанию бот сразу распределит детей."),
+    h("div", { class: "field-row even" }, field("Отправить подарки до", order), field("Завершение обмена", delivery)),
+    h("div", { class: "muted" }, "После срока отправки бот запишет в нарушения тех, кто не отправил подарок. В день завершения обмен закроется, недоставленные подарки тоже попадут в нарушения."),
+    ex && ex.status === "distributed"
+      ? h("div", { class: "muted line" }, "Карточки уже разосланы: новые условия попадут только в следующие сообщения.")
       : null,
     h("button", {
-      class: "btn secondary", type: "button",
+      class: "btn" + (ex ? " secondary" : ""), type: "button",
       onclick: (ev) => {
-        if (!order.value || !delivery.value) return toast("Укажите обе даты", true);
-        run("/api/settings", {
-          budget_max: Number(budget.value), currency: currency.value.trim(),
+        if (!order.value || !delivery.value) return toast("Укажите срок отправки и дату завершения", true);
+        const body = {
+          title: title.value.trim(), budget_max: Number(budget.value), currency: currency.value.trim(),
+          registration_opens_at: opens.value, registration_closes_at: closes.value,
           order_deadline: order.value, delivery_by: delivery.value,
-        }, null, ev.currentTarget);
+        };
+        if (ex) run("/api/settings", body, null, ev.currentTarget);
+        else run("/api/exchanges", body, "Создать новый обмен с этими условиями?", ev.currentTarget);
       },
-    }, "Сохранить условия"),
+    }, ex ? "Сохранить" : "Создать обмен"),
   );
 }
 
 function broadcastCard() {
   const text = h("textarea", { placeholder: "Сообщение всем зарегистрированным участникам" });
-  return h("div", { class: "card" },
+  return card(
     h("h3", null, "Сообщение всем"),
     text,
     h("button", {
@@ -336,18 +472,16 @@ function broadcastCard() {
   );
 }
 
-function contactLine(p) {
-  return h("div", { class: "row line" },
-    p.username ? h("a", { href: "https://t.me/" + p.username, target: "_blank" }, "@" + p.username) : null,
-    p.phone ? h("a", { href: "tel:" + p.phone.replace(/[^\d+]/g, "") }, p.phone) : null,
-  );
+function searchBox(placeholder, onChange) {
+  return card(h("input", {
+    type: "search", placeholder, value: ui.query,
+    oninput: (ev) => { ui.query = ev.target.value; onChange(); },
+  }));
 }
 
-function ageText(age) {
-  const m10 = age % 10, m100 = age % 100;
-  if (m10 === 1 && m100 !== 11) return age + " год";
-  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return age + " года";
-  return age + " лет";
+function matches(values) {
+  const q = ui.query.trim().toLowerCase();
+  return !q || JSON.stringify(values).toLowerCase().includes(q);
 }
 
 function kidLine(c) {
@@ -358,86 +492,78 @@ function kidLine(c) {
 }
 
 function renderFamilies() {
-  const search = h("input", {
-    type: "search", placeholder: "Поиск по имени, телефону, ребёнку", value: familyQuery,
-    oninput: (ev) => {
-      familyQuery = ev.target.value;
-      const list = document.getElementById("family-list");
-      list.replaceChildren(...familyCards());
-    },
-  });
-  const out = [h("div", { class: "card" }, search), h("div", { id: "family-list" }, familyCards())];
-  if (state.without_children.length) {
-    out.push(h("div", { class: "card" },
+  const d = data.exchange;
+  const list = h("div", null);
+  const fill = () => {
+    const items = d.families.filter((f) => matches([f.name, f.username, f.phone, f.children.map((c) => c.name)]));
+    list.replaceChildren(...(items.length ? items.map(familyCard) : [empty(ui.query ? "Никого не нашли" : "Пока никто не зарегистрировался")]));
+  };
+  fill();
+  const out = [searchBox("Поиск по имени, телефону, ребёнку", fill), list];
+  if (d.without_children && d.without_children.length) {
+    out.push(card(
       h("h3", null, "Зарегистрировались, но не добавили детей"),
-      state.without_children.map((p) => h("div", { class: "kid" }, p.name, contactLine(p))),
+      d.without_children.map((p) => h("div", { class: "kid" }, personLink(p), contactLine(p))),
     ));
   }
   return out;
 }
 
-function familyCards() {
-  const q = familyQuery.trim().toLowerCase();
-  const list = state.families.filter((f) => !q || JSON.stringify([f.name, f.username, f.phone, f.children.map((c) => c.name)]).toLowerCase().includes(q));
-  if (!list.length) return [h("div", { class: "empty" }, q ? "Никого не нашли" : "Пока никто не зарегистрировался")];
-  return list.map((f) => h("div", { class: "card" },
+function familyCard(f) {
+  return card(
     h("div", { class: "row" },
-      h("h3", null, f.name),
+      h("h3", null, personLink(f)),
       h("span", { class: "spacer" }),
-      state.assignments.length ? h("span", { class: "badge" }, "дарит " + f.gives) : null,
+      flags(f),
+      data.exchange.assignments.length ? h("span", { class: "badge" }, "дарит " + f.gives) : null,
     ),
     contactLine(f),
     h("div", { class: "muted line" }, "ПВЗ: " + f.pvz),
     h("div", { class: "line" }, f.children.map(kidLine)),
-  ));
+  );
+}
+
+function orderedLate(a) {
+  const deadline = data.exchange.exchange.settings.order_deadline;
+  return !!deadline && !!a.ordered_at && localDay(a.ordered_at) > deadline;
 }
 
 function isProblem(a) {
-  return a.stuck || a.code_pending || (a.status === "ordered" && a.expected_date && a.expected_date < today());
-}
-
-function today() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function fmtDate(value) {
-  if (!value) return "";
-  const d = new Date(value.length === 10 ? value + "T00:00:00" : value);
-  return d.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" });
+  const today = localDay(new Date().toISOString());
+  return a.stuck || a.code_pending || orderedLate(a)
+    || (a.status === "ordered" && !!a.expected_date && a.expected_date < today);
 }
 
 function renderGifts() {
-  if (!state.assignments.length) {
-    return [h("div", { class: "empty" }, "Распределения ещё не было")];
-  }
-  const counts = countBy(state.assignments, (a) => a.status);
-  counts.all = state.assignments.length;
-  counts.problems = state.assignments.filter(isProblem).length;
+  const d = data.exchange;
+  if (!d.assignments.length) return [empty("Распределения ещё не было")];
+  const counts = countBy(d.assignments, (a) => a.status);
+  counts.all = d.assignments.length;
+  counts.problems = d.assignments.filter(isProblem).length;
 
-  const chips = h("div", { class: "chips" }, FILTERS.map(([key, label]) =>
+  const chips = h("div", { class: "chips" }, GIFT_FILTERS.map(([key, label]) =>
     h("button", {
-      class: "chip" + (giftFilter === key ? " active" : ""), type: "button",
-      onclick: () => { giftFilter = key; render(); },
+      class: "chip" + (ui.giftFilter === key ? " active" : ""), type: "button",
+      onclick: () => { ui.giftFilter = key; render(); },
     }, `${label} ${counts[key] || 0}`)));
 
-  const list = state.assignments.filter((a) =>
-    giftFilter === "all" || (giftFilter === "problems" ? isProblem(a) : a.status === giftFilter));
-
-  return [chips, ...(list.length ? list.map(giftCard) : [h("div", { class: "empty" }, "Здесь пусто")])];
+  const list = d.assignments.filter((a) =>
+    ui.giftFilter === "all" || (ui.giftFilter === "problems" ? isProblem(a) : a.status === ui.giftFilter));
+  return [chips, ...(list.length ? list.map(giftCard) : [empty("Здесь пусто")])];
 }
 
 function giftCard(a) {
   const notes = [];
-  if (a.status === "ordered") notes.push(a.expected_date ? "ожидается " + fmtDate(a.expected_date) : "дата доставки неизвестна");
+  if (a.ordered_at) notes.push("отправлен " + fmtDate(a.ordered_at) + (orderedLate(a) ? " (с опозданием)" : ""));
+  if (a.status === "ordered" && a.expected_date) notes.push("ожидается " + fmtDate(a.expected_date));
+  if (a.arrived_at) notes.push("в ПВЗ с " + fmtDate(a.arrived_at));
   if (a.status === "arrived") {
-    notes.push(`в ПВЗ ${a.days_in_pvz} дн.`);
     if (a.code_valid) notes.push("код на сегодня отправлен");
     if (a.code_pending) notes.push("получатель ждёт код");
   }
-  if (a.status === "received") notes.push("получен " + fmtDate(a.received_at));
+  if (a.received_at) notes.push("получен " + fmtDate(a.received_at));
 
-  const card = h("div", { class: "card" },
+  const c = card(
     h("div", { class: "row" },
       h("h3", null, `${a.child.name}, ${ageText(a.child.age)}`),
       h("span", { class: "spacer" }),
@@ -445,24 +571,22 @@ function giftCard(a) {
       isProblem(a) ? h("span", { class: "badge alert" }, "!") : null,
     ),
     notes.length ? h("div", { class: "muted" }, notes.join(" · ")) : null,
-    h("div", { class: "line" }, h("span", { class: "muted" }, "Получатель: "), a.parent.name),
+    h("div", { class: "line" }, h("span", { class: "muted" }, "Получатель: "), personLink(a.parent)),
     contactLine(a.parent),
-    h("div", { class: "line" }, h("span", { class: "muted" }, "Даритель: "), a.giver.name),
+    h("div", { class: "line" }, h("span", { class: "muted" }, "Даритель: "), personLink(a.giver)),
     contactLine(a.giver),
   );
-
-  if (a.status !== "received" && state.exchange.status === "distributed") {
-    card.append(reassignControl(a));
-  }
-  return card;
+  const ex = data.exchange.exchange;
+  if (ex.current && ex.status === "distributed" && a.status !== "received") c.append(reassignControl(a));
+  return c;
 }
 
 function reassignControl(a) {
   const wrap = h("div", null);
-  const open = h("button", {
+  wrap.append(h("button", {
     class: "btn small secondary", type: "button",
     onclick: () => {
-      const candidates = state.families.filter((f) => f.id !== a.parent.id && f.id !== a.giver.id);
+      const candidates = data.exchange.families.filter((f) => f.id !== a.parent.id && f.id !== a.giver.id && !f.banned);
       const select = h("select", null,
         h("option", { value: "" }, "Кому передать подарок?"),
         candidates.map((f) => h("option", { value: f.id }, `${f.name} (дарит ${f.gives})`)));
@@ -480,19 +604,167 @@ function reassignControl(a) {
         }, "Передать"),
       );
     },
-  }, "Передать другому дарителю");
-  wrap.append(open);
+  }, "Передать другому дарителю"));
   return wrap;
 }
 
-// ---------- tabs ----------
+function violationCard(v, withExchange) {
+  return card(
+    h("div", { class: "row" },
+      h("h3", null, VIOLATION_KIND[v.kind] || v.kind),
+      h("span", { class: "spacer" }),
+      v.dismissed ? h("span", { class: "badge" }, "снято") : h("span", { class: "badge flag" }, "🚩"),
+    ),
+    h("div", { class: "line" }, personLink({ id: v.user_id, name: v.user_name }),
+      v.child_name ? h("span", { class: "muted" }, " · подарок для " + v.child_name) : null),
+    withExchange ? h("div", { class: "muted" }, v.exchange_title) : null,
+    v.comment ? h("div", { class: "line" }, v.comment) : null,
+    h("div", { class: "muted line" }, "Записано " + fmtDate(v.created_at)),
+    h("button", {
+      class: "btn small secondary", type: "button",
+      onclick: (ev) => run(`/api/violations/${v.id}/dismiss`, { dismissed: !v.dismissed },
+        v.dismissed ? "Вернуть нарушение?" : "Снять нарушение? Оно перестанет учитываться в красных флагах.", ev.currentTarget),
+    }, v.dismissed ? "Вернуть" : "Снять"),
+  );
+}
+
+function renderViolations() {
+  const d = data.exchange;
+  const select = h("select", null,
+    h("option", { value: "" }, "Участник"),
+    d.families.map((f) => h("option", { value: f.id }, f.name)));
+  const comment = h("textarea", { placeholder: "Что случилось: например, подарок не по бюджету" });
+  const out = [card(
+    h("h3", null, "Добавить нарушение"),
+    select,
+    h("div", { class: "line" }, comment),
+    h("button", {
+      class: "btn secondary", type: "button",
+      onclick: (ev) => {
+        if (!select.value) return toast("Выберите участника", true);
+        if (!comment.value.trim()) return toast("Опишите нарушение", true);
+        run("/api/violations", { exchange_id: d.exchange.id, user_id: Number(select.value), comment: comment.value.trim() }, null, ev.currentTarget);
+      },
+    }, "Добавить"),
+  )];
+  if (!d.violations.length) {
+    out.push(empty(["distributed", "completed"].includes(d.exchange.status)
+      ? "Нарушений нет 🎉" : "Нарушения появятся после срока отправки подарков"));
+  }
+  return out.concat(d.violations.map((v) => violationCard(v, false)));
+}
+
+// ---------- history ----------
+
+function renderHistory() {
+  if (!data.history.length) return [empty("Обменов ещё не было")];
+  return data.history.map((x) => {
+    const s = x.settings;
+    return h("div", { class: "card clickable", onclick: () => openExchange(x.id) },
+      h("div", { class: "row" },
+        h("h3", null, s.title),
+        h("span", { class: "spacer" }),
+        h("span", { class: "badge" + (x.current ? " ordered" : "") }, x.status_title),
+      ),
+      h("div", { class: "muted" }, [
+        s.registration_opens_at ? "регистрация с " + fmtLocal(s.registration_opens_at) : "создан " + fmtDate(x.created_at),
+        s.delivery_by ? "завершение " + fmtDate(s.delivery_by) : null,
+      ].filter(Boolean).join(" · ")),
+      h("div", { class: "row line" },
+        h("span", null, `${x.families} семей · ${x.children} детей`),
+        x.gifts ? h("span", { class: "muted" }, `получено ${x.received}/${x.gifts}`) : null,
+        x.violations ? h("span", { class: "badge flag" }, "🚩 " + x.violations) : null,
+      ),
+    );
+  });
+}
+
+// ---------- people ----------
+
+function renderPeople() {
+  const chips = h("div", { class: "chips" }, PEOPLE_FILTERS.map(([key, label]) =>
+    h("button", {
+      class: "chip" + (ui.peopleFilter === key ? " active" : ""), type: "button",
+      onclick: () => { ui.peopleFilter = key; render(); },
+    }, label)));
+  const list = h("div", null);
+  const fill = () => {
+    const items = data.people.filter((u) =>
+      (ui.peopleFilter === "all" || (ui.peopleFilter === "flag" ? u.violations > 0 : u.banned))
+      && matches([u.name, u.username, u.phone]));
+    list.replaceChildren(...(items.length ? items.map(personRow) : [empty("Никого не нашли")]));
+  };
+  fill();
+  return [chips, searchBox("Поиск по имени, телефону, @username", fill), list];
+}
+
+function personRow(u) {
+  return h("div", { class: "card clickable" + (u.red_flag ? " flagged" : ""), onclick: () => openUser(u.id) },
+    h("div", { class: "row" }, h("h3", null, u.name), h("span", { class: "spacer" }), flags(u)),
+    h("div", { class: "muted" }, `обменов: ${u.exchanges} · подарил: ${u.gifts_given} · нарушений: ${u.violations}`),
+    contactLine(u),
+  );
+}
+
+function banControls(u) {
+  if (u.banned) {
+    return [
+      h("div", { class: "line danger-text" }, "Заблокирован: " + u.ban_reason),
+      h("button", {
+        class: "btn secondary", type: "button",
+        onclick: (ev) => run(`/api/users/${u.id}/ban`, { banned: false }, "Разблокировать? Человек снова сможет участвовать.", ev.currentTarget),
+      }, "Разблокировать"),
+    ];
+  }
+  const reason = h("textarea", { placeholder: "Причина блокировки" });
+  return [
+    h("div", { class: "line" }, reason),
+    h("button", {
+      class: "btn danger", type: "button",
+      onclick: (ev) => {
+        if (!reason.value.trim()) return toast("Укажите причину", true);
+        run(`/api/users/${u.id}/ban`, { banned: true, reason: reason.value.trim() },
+          "Заблокировать? Человек не сможет добавлять детей и не попадёт в следующие распределения.", ev.currentTarget);
+      },
+    }, "Заблокировать"),
+  ];
+}
+
+function renderUser() {
+  const d = data.user;
+  const u = d.user;
+  const out = [card(
+    h("div", { class: "row" }, h("h3", null, u.name), h("span", { class: "spacer" }), flags(u)),
+    contactLine(u),
+    h("div", { class: "muted line" }, "ПВЗ: " + (u.pvz || "—")),
+    h("div", { class: "muted" }, `Зарегистрирован ${fmtDate(u.created_at)} · обменов: ${u.exchanges} · подарил: ${u.gifts_given}`),
+    banControls(u),
+  )];
+
+  if (d.violations.length) {
+    out.push(h("h4", { class: "section-title" }, "Нарушения"));
+    out.push(...d.violations.map((v) => violationCard(v, true)));
+  }
+
+  out.push(h("h4", { class: "section-title" }, "Участие в обменах"));
+  if (!d.exchanges.length) out.push(empty("Ещё не участвовал"));
+  for (const e of d.exchanges) {
+    out.push(h("div", { class: "card clickable", onclick: () => openExchange(e.exchange_id) },
+      h("div", { class: "row" }, h("h3", null, e.title), h("span", { class: "spacer" }), h("span", { class: "badge" }, e.status_title)),
+      e.children.length ? h("div", { class: "line" }, h("span", { class: "muted" }, "Дети: "), e.children.map((c) => c.name).join(", ")) : null,
+      e.gave.length ? h("div", { class: "line" }, h("span", { class: "muted" }, "Дарил: "),
+        e.gave.map((a) => `${a.child.name} (${GIFT_STATUS[a.status]}${a.ordered_at ? ", отправлен " + fmtDate(a.ordered_at) : ""})`).join("; ")) : null,
+      e.received.length ? h("div", { class: "line" }, h("span", { class: "muted" }, "Его детям: "),
+        e.received.map((a) => `${a.child.name} — ${GIFT_STATUS[a.status]}`).join("; ")) : null,
+    ));
+  }
+  return out;
+}
+
+// ---------- boot ----------
 
 for (const btn of document.querySelectorAll(".tab")) {
-  btn.addEventListener("click", () => {
-    activeTab = btn.dataset.tab;
-    for (const b of document.querySelectorAll(".tab")) b.classList.toggle("active", b === btn);
-    for (const p of document.querySelectorAll(".tab-panel")) p.hidden = p.id !== "tab-" + activeTab;
-  });
+  btn.addEventListener("click", () => setSection(btn.dataset.section));
 }
 document.getElementById("refresh").addEventListener("click", load);
 

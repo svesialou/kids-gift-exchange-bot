@@ -1,55 +1,22 @@
-package store
+package store_test
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
 	"math/rand"
-	"os"
 	"testing"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
-
 	"github.com/svesialou/kids-gift-exchange-bot/internal/domain"
+	"github.com/svesialou/kids-gift-exchange-bot/internal/store"
+	"github.com/svesialou/kids-gift-exchange-bot/internal/store/storetest"
 )
 
-// newTestStore needs TEST_MYSQL_DSN pointing at a server root, e.g. root:secret@tcp(127.0.0.1:3307)/
-func newTestStore(t *testing.T) *Store {
-	t.Helper()
-	root := os.Getenv("TEST_MYSQL_DSN")
-	if root == "" {
-		t.Skip("TEST_MYSQL_DSN not set")
-	}
-	ctx := context.Background()
-	admin, err := sql.Open("mysql", root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	name := fmt.Sprintf("kge_test_%d", time.Now().UnixNano())
-	if _, err := admin.ExecContext(ctx, "CREATE DATABASE "+name+" CHARACTER SET utf8mb4"); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_, _ = admin.ExecContext(ctx, "DROP DATABASE "+name)
-		_ = admin.Close()
-	})
+func newTestStore(t *testing.T) *store.Store { return storetest.New(t) }
 
-	st, err := Open(ctx, root+name+"?parseTime=true&loc=UTC&multiStatements=true&charset=utf8mb4")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	if _, err := st.Migrate(); err != nil {
-		t.Fatal(err)
-	}
-	return st
-}
-
-func mustUser(t *testing.T, st *Store, tgID int64) User {
+func mustUser(t *testing.T, st *store.Store, tgID int64) store.User {
 	t.Helper()
 	ctx := context.Background()
-	if err := st.SaveUser(ctx, User{TgID: tgID, FirstName: "F", LastName: "L", Phone: "+375291234567", PVZAddress: "Minsk"}); err != nil {
+	if err := st.SaveUser(ctx, store.User{TgID: tgID, FirstName: "F", LastName: "L", Phone: "+375291234567", PVZAddress: "Minsk"}); err != nil {
 		t.Fatal(err)
 	}
 	u, err := st.UserByTG(ctx, tgID)
@@ -92,8 +59,8 @@ func TestExchangeLifecycle(t *testing.T) {
 	mustTrue(t, ok, err, "open registration")
 
 	a, b, c := mustUser(t, st, 1), mustUser(t, st, 2), mustUser(t, st, 3)
-	for _, u := range []User{a, a, b, c} {
-		if err := st.AddChild(ctx, ex.ID, Child{ParentID: u.ID, FirstName: "Kid", LastName: "L", Age: 5, Gender: "boy"}); err != nil {
+	for _, u := range []store.User{a, a, b, c} {
+		if err := st.AddChild(ctx, ex.ID, store.Child{ParentID: u.ID, FirstName: "Kid", LastName: "L", Age: 5, Gender: "boy"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -187,25 +154,118 @@ func TestExchangeLifecycle(t *testing.T) {
 	mustFalse(t, fresh, err, "duplicate reminder same day")
 }
 
-func TestExchangeSettings(t *testing.T) {
+func TestExchangeScheduleAndHistory(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
-	ex, err := st.CurrentExchange(ctx)
+	first, err := st.CurrentExchange(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := st.ExchangeSettings(ctx, ex.ID)
-	if err != nil || got.BudgetMax != nil || got.Currency != nil || got.OrderDeadline != nil || got.DeliveryDeadline != nil {
-		t.Fatalf("new exchange must have no overrides: %+v %v", got, err)
+	if first.BudgetMax != nil || first.RegistrationOpensAt != nil {
+		t.Fatalf("first exchange must have no saved settings: %+v", first)
 	}
-	order := time.Date(2026, 12, 13, 0, 0, 0, 0, time.UTC)
-	delivery := time.Date(2026, 12, 25, 0, 0, 0, 0, time.UTC)
-	if err := st.SaveExchangeSettings(ctx, ex.ID, 30, "BYN", order, delivery); err != nil {
+
+	opens := time.Date(2026, 11, 25, 7, 0, 0, 0, time.UTC)
+	closes := time.Date(2026, 12, 5, 18, 0, 0, 0, time.UTC)
+	sch := store.ExchangeSchedule{Title: "Новый год", BudgetMax: 30, Currency: "BYN", RegistrationOpensAt: &opens, RegistrationClosesAt: &closes,
+		OrderDeadline: time.Date(2026, 12, 13, 0, 0, 0, 0, time.UTC), DeliveryDeadline: time.Date(2026, 12, 25, 0, 0, 0, 0, time.UTC)}
+
+	if _, err := st.CreateExchange(ctx, sch); err == nil {
+		t.Fatal("a new exchange must not start while the current one is not completed")
+	}
+	if err := st.SaveExchangeSchedule(ctx, first.ID, sch); err != nil {
 		t.Fatal(err)
 	}
-	got, err = st.ExchangeSettings(ctx, ex.ID)
-	if err != nil || *got.BudgetMax != 30 || *got.Currency != "BYN" || !got.OrderDeadline.Equal(order) || !got.DeliveryDeadline.Equal(delivery) {
-		t.Fatalf("saved settings not read back: %+v %v", got, err)
+	got, err := st.ExchangeByID(ctx, first.ID)
+	if err != nil || got.Title != "Новый год" || *got.BudgetMax != 30 || !got.RegistrationOpensAt.Equal(opens) || !got.RegistrationClosesAt.Equal(closes) {
+		t.Fatalf("schedule not read back: %+v %v", got, err)
+	}
+
+	ok, err := st.TransitionExchange(ctx, first.ID, domain.ExchangeCompleted, domain.ExchangeDraft)
+	mustTrue(t, ok, err, "complete first exchange")
+	secondID, err := st.CreateExchange(ctx, sch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur, _ := st.CurrentExchange(ctx)
+	list, err := st.ListExchanges(ctx)
+	if err != nil || cur.ID != secondID || len(list) != 2 || list[0].ID != secondID {
+		t.Fatalf("history: current %d, list %+v, %v", cur.ID, list, err)
+	}
+}
+
+func TestViolationsAndBans(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+	ex, _ := st.CurrentExchange(ctx)
+	_, _ = st.TransitionExchange(ctx, ex.ID, domain.ExchangeOpen, domain.ExchangeDraft)
+
+	a, b, c, banned := mustUser(t, st, 1), mustUser(t, st, 2), mustUser(t, st, 3), mustUser(t, st, 4)
+	for _, u := range []store.User{a, b, c, banned} {
+		if err := st.AddChild(ctx, ex.ID, store.Child{ParentID: u.ID, FirstName: "Kid", LastName: "L", Age: 5, Gender: "boy"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ok, err := st.SetBanned(ctx, banned.ID, true, "не отправил подарок в прошлом году", now)
+	mustTrue(t, ok, err, "ban")
+	refs, _ := st.ChildRefs(ctx, ex.ID)
+	if len(refs) != 3 {
+		t.Fatalf("children of banned parents must be left out of distribution, got %d refs", len(refs))
+	}
+
+	_, _ = st.TransitionExchange(ctx, ex.ID, domain.ExchangeClosed, domain.ExchangeOpen)
+	if _, err := st.Distribute(ctx, ex.ID, func(r []domain.ChildRef) ([]domain.Pair, error) {
+		return domain.Distribute(r, rand.New(rand.NewSource(1)))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := st.AssignmentsByExchange(ctx, ex.ID)
+	ordered := list[0]
+	ok, err = st.MarkOrdered(ctx, ordered.ID, ordered.Giver.ID, nil, now)
+	mustTrue(t, ok, err, "order one gift")
+
+	n, err := st.RecordOrderViolations(ctx, ex.ID, now)
+	if err != nil || n != 2 {
+		t.Fatalf("want 2 order violations, got %d %v", n, err)
+	}
+	if n, err := st.RecordOrderViolations(ctx, ex.ID, now); err != nil || n != 0 {
+		t.Fatalf("order check must run once, second run recorded %d %v", n, err)
+	}
+	n, err = st.RecordDeliveryViolations(ctx, ex.ID, now)
+	if err != nil || n != 3 {
+		t.Fatalf("want 3 delivery violations (nothing arrived), got %d %v", n, err)
+	}
+
+	if err := st.AddManualViolation(ctx, ex.ID, a.ID, "подарок не по бюджету"); err != nil {
+		t.Fatal(err)
+	}
+	vs, err := st.ViolationsByExchange(ctx, ex.ID)
+	if err != nil || len(vs) != 6 {
+		t.Fatalf("want 6 violations, got %d %v", len(vs), err)
+	}
+	ok, err = st.SetViolationDismissed(ctx, vs[0].ID, true, now)
+	mustTrue(t, ok, err, "dismiss")
+
+	stats, err := st.UserStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := 0
+	for _, s := range stats {
+		total += s.Violations
+		if s.ID == banned.ID && (s.BannedAt == nil || s.BanReason == "") {
+			t.Fatalf("ban not visible in stats: %+v", s)
+		}
+	}
+	if total != 5 {
+		t.Fatalf("dismissed violations must not count: want 5, got %d", total)
+	}
+	ok, err = st.SetBanned(ctx, banned.ID, false, "", now)
+	mustTrue(t, ok, err, "unban")
+	u, _ := st.UserByID(ctx, banned.ID)
+	if u.BannedAt != nil || u.BanReason != "" {
+		t.Fatalf("unban did not clear: %+v", u)
 	}
 }
 
@@ -213,14 +273,14 @@ func TestSessionRoundTrip(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
 
-	if err := st.SaveSession(ctx, 42, Session{State: "reg_last", Data: map[string]string{"first_name": "Аня"}}); err != nil {
+	if err := st.SaveSession(ctx, 42, store.Session{State: "reg_last", Data: map[string]string{"first_name": "Аня"}}); err != nil {
 		t.Fatal(err)
 	}
 	sess, err := st.Session(ctx, 42)
 	if err != nil || sess.State != "reg_last" || sess.Data["first_name"] != "Аня" {
 		t.Fatalf("got %+v %v", sess, err)
 	}
-	if err := st.SaveSession(ctx, 42, Session{}); err != nil {
+	if err := st.SaveSession(ctx, 42, store.Session{}); err != nil {
 		t.Fatal(err)
 	}
 	sess, err = st.Session(ctx, 42)

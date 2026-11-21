@@ -5,11 +5,13 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/svesialou/kids-gift-exchange-bot/internal/config"
 )
 
 // Invalid settings must be refused before anything is written.
 func TestUpdateSettingsValidation(t *testing.T) {
-	b := &Bot{now: time.Now}
+	b := &Bot{now: time.Now, cfg: config.Config{Location: time.UTC}}
 	day := func(d int) time.Time { return time.Date(2026, 12, d, 0, 0, 0, 0, time.UTC) }
 	tests := []struct {
 		name string
@@ -21,6 +23,9 @@ func TestUpdateSettingsValidation(t *testing.T) {
 		{"long currency", Settings{BudgetMax: 25, Currency: "белорусских", OrderDeadline: day(13), DeliveryBy: day(25)}},
 		{"no order date", Settings{BudgetMax: 25, Currency: "BYN", DeliveryBy: day(25)}},
 		{"order after delivery", Settings{BudgetMax: 25, Currency: "BYN", OrderDeadline: day(26), DeliveryBy: day(25)}},
+		{"only registration start", Settings{BudgetMax: 25, Currency: "BYN", OrderDeadline: day(13), DeliveryBy: day(25), RegistrationOpensAt: ptr(day(1))}},
+		{"registration closes before it opens", Settings{BudgetMax: 25, Currency: "BYN", OrderDeadline: day(13), DeliveryBy: day(25), RegistrationOpensAt: ptr(day(5)), RegistrationClosesAt: ptr(day(4))}},
+		{"registration closes after order deadline", Settings{BudgetMax: 25, Currency: "BYN", OrderDeadline: day(13), DeliveryBy: day(25), RegistrationOpensAt: ptr(day(1)), RegistrationClosesAt: ptr(day(14))}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -31,3 +36,5 @@ func TestUpdateSettingsValidation(t *testing.T) {
 		})
 	}
 }
+
+func ptr(t time.Time) *time.Time { return &t }

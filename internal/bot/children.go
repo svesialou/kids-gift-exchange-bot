@@ -66,6 +66,10 @@ func (b *Bot) startChild(ctx context.Context, user store.User) error {
 		b.send(user.TgID, "Регистрация закрыта, добавить ребёнка уже нельзя.", nil)
 		return nil
 	}
+	if user.BannedAt != nil {
+		b.send(user.TgID, "Участие в обменах для тебя недоступно. Если это ошибка, напиши организатору.", nil)
+		return nil
+	}
 	if err := b.store.SaveSession(ctx, user.TgID, store.Session{State: stateChildFirst, Data: map[string]string{}}); err != nil {
 		return err
 	}

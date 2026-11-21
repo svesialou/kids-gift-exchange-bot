@@ -118,3 +118,18 @@ a { color: var(--link); text-decoration: none; }
   font-size: 14px; box-shadow: 0 4px 16px rgba(0, 0, 0, .2);
 }
 .toast.error { background: var(--danger); color: #fff; }
+
+.field-row.even { grid-template-columns: 1fr 1fr; }
+.kv { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; font-size: 14px; }
+.kv > span:last-child { text-align: right; }
+.danger-text { color: var(--danger); }
+.badge.flag { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); }
+.card.clickable { cursor: pointer; }
+.card.flagged { box-shadow: inset 3px 0 0 var(--danger); }
+.back {
+  border: 0; background: none; color: var(--link); padding: 0 0 10px; font-size: 15px; cursor: pointer;
+}
+.section-title { margin: 18px 4px 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--hint); }
+.top-text { min-width: 0; }
+.top-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+input:disabled { opacity: .55; }

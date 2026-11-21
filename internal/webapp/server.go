@@ -26,15 +26,18 @@ const initDataMaxAge = 24 * time.Hour
 // Admin is the part of the bot the panel drives; every action also notifies participants in Telegram.
 type Admin interface {
 	ChangeExchangeStatus(ctx context.Context, action string) (domain.ExchangeStatus, error)
-	NewExchange(ctx context.Context) error
+	NewExchange(ctx context.Context, s bot.Settings) error
 	PreviewDistribution(ctx context.Context) (bot.DistributionPreview, error)
 	Distribute(ctx context.Context) (int, error)
 	RemindNow(ctx context.Context) (int, error)
 	Reassign(ctx context.Context, childID, giverID int64) error
 	Broadcast(ctx context.Context, text string) (int, error)
 	InviteLink() string
-	Settings() bot.Settings
+	EffectiveSettings(ex store.Exchange) bot.Settings
 	UpdateSettings(ctx context.Context, s bot.Settings) error
+	SetBanned(ctx context.Context, userID int64, banned bool, reason string) error
+	AddViolation(ctx context.Context, exchangeID, userID int64, comment string) error
+	SetViolationDismissed(ctx context.Context, id int64, dismissed bool) error
 }
 
 type Server struct {
@@ -54,10 +57,18 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /", http.FileServerFS(static))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	mux.Handle("GET /api/state", s.auth(s.handleState))
+	mux.Handle("GET /api/exchanges", s.auth(s.handleExchanges))
+	mux.Handle("GET /api/exchanges/{id}", s.auth(s.handleExchange))
+	mux.Handle("POST /api/exchanges", s.auth(s.handleCreateExchange))
+	mux.Handle("POST /api/settings", s.auth(s.handleSettings))
 	mux.Handle("POST /api/action", s.auth(s.handleAction))
 	mux.Handle("POST /api/reassign", s.auth(s.handleReassign))
 	mux.Handle("POST /api/broadcast", s.auth(s.handleBroadcast))
-	mux.Handle("POST /api/settings", s.auth(s.handleSettings))
+	mux.Handle("GET /api/users", s.auth(s.handleUsers))
+	mux.Handle("GET /api/users/{id}", s.auth(s.handleUser))
+	mux.Handle("POST /api/users/{id}/ban", s.auth(s.handleBan))
+	mux.Handle("POST /api/violations", s.auth(s.handleAddViolation))
+	mux.Handle("POST /api/violations/{id}/dismiss", s.auth(s.handleDismissViolation))
 	return securityHeaders(mux)
 }
 
@@ -119,185 +130,6 @@ func (s *Server) auth(next func(http.ResponseWriter, *http.Request)) http.Handle
 	})
 }
 
-// ---------- state ----------
-
-type personJSON struct {
-	ID       int64  `json:"id"`
-	Name     string `json:"name"`
-	Username string `json:"username,omitempty"`
-	Phone    string `json:"phone,omitempty"`
-	PVZ      string `json:"pvz,omitempty"`
-}
-
-type childJSON struct {
-	ID     int64  `json:"id"`
-	Name   string `json:"name"`
-	Age    int    `json:"age"`
-	Gender string `json:"gender"`
-	Wishes string `json:"wishes,omitempty"`
-}
-
-type familyJSON struct {
-	personJSON
-	Children []childJSON `json:"children"`
-	Gives    int         `json:"gives"`
-}
-
-type assignmentJSON struct {
-	ID           int64      `json:"id"`
-	Status       string     `json:"status"`
-	Child        childJSON  `json:"child"`
-	Parent       personJSON `json:"parent"`
-	Giver        personJSON `json:"giver"`
-	ExpectedDate string     `json:"expected_date,omitempty"`
-	OrderedAt    *time.Time `json:"ordered_at,omitempty"`
-	ArrivedAt    *time.Time `json:"arrived_at,omitempty"`
-	ReceivedAt   *time.Time `json:"received_at,omitempty"`
-	CodeValid    bool       `json:"code_valid"`
-	CodePending  bool       `json:"code_pending"`
-	DaysInPVZ    int        `json:"days_in_pvz"`
-	Stuck        bool       `json:"stuck"`
-}
-
-type stateJSON struct {
-	Exchange struct {
-		ID     int64  `json:"id"`
-		Status string `json:"status"`
-		Title  string `json:"title"`
-	} `json:"exchange"`
-	Settings    settingsJSON            `json:"settings"`
-	Invite      string                  `json:"invite"`
-	Preview     bot.DistributionPreview `json:"preview"`
-	Families    []familyJSON            `json:"families"`
-	Unfinished  []personJSON            `json:"without_children"`
-	Assignments []assignmentJSON        `json:"assignments"`
-}
-
-func person(u store.User) personJSON {
-	return personJSON{ID: u.ID, Name: strings.TrimSpace(u.FirstName + " " + u.LastName), Username: u.TgUsername, Phone: u.Phone, PVZ: u.PVZAddress}
-}
-
-func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	st, err := s.buildState(ctx)
-	if err != nil {
-		slog.Error("admin panel state failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "Не удалось загрузить данные.")
-		return
-	}
-	writeJSON(w, http.StatusOK, st)
-}
-
-func (s *Server) buildState(ctx context.Context) (stateJSON, error) {
-	var out stateJSON
-	ex, err := s.store.CurrentExchange(ctx)
-	if err != nil {
-		return out, err
-	}
-	out.Exchange.ID, out.Exchange.Status, out.Exchange.Title = ex.ID, string(ex.Status), bot.StatusTitle(ex.Status)
-	out.Settings = settingsToJSON(s.admin.Settings())
-	out.Invite = s.admin.InviteLink()
-
-	if out.Preview, err = s.admin.PreviewDistribution(ctx); err != nil {
-		return out, err
-	}
-
-	users, err := s.store.Users(ctx)
-	if err != nil {
-		return out, err
-	}
-	children, err := s.store.ExchangeChildren(ctx, ex.ID)
-	if err != nil {
-		return out, err
-	}
-	assignments, err := s.store.AssignmentsByExchange(ctx, ex.ID)
-	if err != nil {
-		return out, err
-	}
-
-	kids := map[int64][]childJSON{}
-	for _, c := range children {
-		kids[c.ParentID] = append(kids[c.ParentID], childJSON{ID: c.ID, Name: c.FirstName + " " + c.LastName, Age: c.Age, Gender: c.Gender, Wishes: c.Wishes})
-	}
-	gives := map[int64]int{}
-	for _, a := range assignments {
-		gives[a.Giver.ID]++
-	}
-	out.Families = []familyJSON{}
-	out.Unfinished = []personJSON{}
-	for _, u := range users {
-		if len(kids[u.ID]) == 0 {
-			out.Unfinished = append(out.Unfinished, person(u))
-			continue
-		}
-		out.Families = append(out.Families, familyJSON{personJSON: person(u), Children: kids[u.ID], Gives: gives[u.ID]})
-	}
-
-	now := s.now()
-	out.Assignments = []assignmentJSON{}
-	for _, a := range assignments {
-		ps := a.PickupState()
-		item := assignmentJSON{
-			ID:          a.ID,
-			Status:      string(a.Status),
-			Child:       childJSON{ID: a.ChildID, Name: a.ChildFirstName + " " + a.ChildLastName, Age: a.ChildAge, Gender: a.ChildGender, Wishes: a.ChildWishes},
-			Parent:      person(a.Parent),
-			Giver:       person(a.Giver),
-			OrderedAt:   a.OrderedAt,
-			ArrivedAt:   a.ArrivedAt,
-			ReceivedAt:  a.ReceivedAt,
-			CodeValid:   a.Status == domain.AssignmentArrived && ps.CodeValid(now),
-			CodePending: a.Status == domain.AssignmentArrived && ps.CodeRequestPending(),
-		}
-		if a.ExpectedDate != nil {
-			item.ExpectedDate = a.ExpectedDate.Format("2006-01-02")
-		}
-		if a.Status == domain.AssignmentArrived && a.ArrivedAt != nil {
-			waited := now.Sub(*a.ArrivedAt)
-			item.DaysInPVZ = int(waited.Hours() / 24)
-			item.Stuck = waited >= s.cfg.StuckAfter
-		}
-		out.Assignments = append(out.Assignments, item)
-	}
-	return out, nil
-}
-
-// settingsJSON carries dates as YYYY-MM-DD for <input type="date">; empty means not set.
-type settingsJSON struct {
-	BudgetMax     int    `json:"budget_max"`
-	Currency      string `json:"currency"`
-	OrderDeadline string `json:"order_deadline"`
-	DeliveryBy    string `json:"delivery_by"`
-}
-
-func settingsToJSON(st bot.Settings) settingsJSON {
-	out := settingsJSON{BudgetMax: st.BudgetMax, Currency: st.Currency}
-	if !st.OrderDeadline.IsZero() {
-		out.OrderDeadline = st.OrderDeadline.Format(time.DateOnly)
-	}
-	if !st.DeliveryBy.IsZero() {
-		out.DeliveryBy = st.DeliveryBy.Format(time.DateOnly)
-	}
-	return out
-}
-
-func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
-	var req settingsJSON
-	if !readJSON(w, r, &req) {
-		return
-	}
-	order, err1 := time.Parse(time.DateOnly, req.OrderDeadline)
-	delivery, err2 := time.Parse(time.DateOnly, req.DeliveryBy)
-	if err1 != nil || err2 != nil {
-		writeError(w, http.StatusBadRequest, "Укажите обе даты.")
-		return
-	}
-	err := s.admin.UpdateSettings(r.Context(), bot.Settings{
-		BudgetMax: req.BudgetMax, Currency: req.Currency, OrderDeadline: order, DeliveryBy: delivery,
-	})
-	s.reply(w, "Условия сохранены. Новые сообщения бота будут с ними, уже отправленные не изменятся.", err)
-}
-
 // ---------- actions ----------
 
 func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
@@ -315,10 +147,6 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 		var to domain.ExchangeStatus
 		if to, err = s.admin.ChangeExchangeStatus(ctx, req.Action); err == nil {
 			msg = "Готово: " + bot.StatusTitle(to) + "."
-		}
-	case "new_exchange":
-		if err = s.admin.NewExchange(ctx); err == nil {
-			msg = "Создан новый обмен."
 		}
 	case "distribute":
 		var n int
@@ -389,4 +217,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+func pathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, "Некорректный id.")
+		return 0, false
+	}
+	return id, true
 }

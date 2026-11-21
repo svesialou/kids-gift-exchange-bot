@@ -313,9 +313,10 @@ function deleteCard(d) {
     h("button", {
       class: "btn danger", type: "button",
       onclick: async (ev) => {
+        // currentTarget is reset once the click handler yields, so take the button before awaiting the dialog.
+        const btn = ev.currentTarget;
         const text = `Удалить «${ex.settings.title}»? Семей: ${d.families.length}, детей: ${kids}, подарков: ${d.assignments.length}. Восстановить будет нельзя.`;
         if (!(await confirmAction(text))) return;
-        const btn = ev.currentTarget;
         btn.disabled = true;
         try {
           const res = await api(`/api/exchanges/${ex.id}/delete`, { notify: running && notify.checked });

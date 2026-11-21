@@ -1,0 +1,6 @@
+DROP TABLE IF EXISTS sessions;
+DROP TABLE IF EXISTS reminders_sent;
+DROP TABLE IF EXISTS assignments;
+DROP TABLE IF EXISTS children;
+DROP TABLE IF EXISTS users;
+DROP TABLE IF EXISTS exchanges;

@@ -42,9 +42,11 @@ func run() error {
 	}
 	defer st.Close()
 
-	if err := st.Migrate(); err != nil {
+	version, err := st.Migrate()
+	if err != nil {
 		return err
 	}
+	slog.Info("migrations applied", "version", version)
 
 	api, err := tgbotapi.NewBotAPI(cfg.TelegramToken)
 	if err != nil {

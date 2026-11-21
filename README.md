@@ -47,4 +47,6 @@ make test-db           # unit + MySQL integration tests against the compose data
 
 ## Deployment
 
-CI publishes `ghcr.io/svesialou/kids-gift-exchange-bot:latest` on every push to `main`. The production runtime (env file, MySQL database and user, container) is managed by the `kids_gift_exchange` stack in the `management` repository.
+Every push to `main` runs tests, publishes `ghcr.io/svesialou/kids-gift-exchange-bot:latest` and deploys it. The deploy job connects over SSH with a key that the server restricts to `deploy.sh`: it pulls the image, recreates the container and waits until the bot logs `migrations applied` and `bot started`. Migrations run on bot start, so a failing migration fails the deploy job and the log tail shows up in the job output.
+
+GitHub environment `production` needs the secrets `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY` and `DEPLOY_KNOWN_HOSTS`. The production runtime (env file, MySQL database and user, container) is managed by the `kids_gift_exchange` stack in the `management` repository.

@@ -37,7 +37,7 @@ func (f *fakeAdmin) RemindNow(context.Context) (int, error)         { return 0, 
 func (f *fakeAdmin) Reassign(context.Context, int64, int64) error   { return nil }
 func (f *fakeAdmin) Broadcast(context.Context, string) (int, error) { return 0, nil }
 func (f *fakeAdmin) EffectiveSettings(ex store.Exchange) bot.Settings {
-	return bot.Settings{Title: "Обмен", BudgetMax: 25, Currency: "BYN"}
+	return bot.Settings{Title: "Обмен", BudgetMin: 25}
 }
 func (f *fakeAdmin) SetBanned(context.Context, []int64, bool, string) (int, error) { return 0, nil }
 func (f *fakeAdmin) SendMessage(context.Context, []int64, string) (int, error)     { return 0, nil }
@@ -53,7 +53,7 @@ func testStore(t *testing.T) *store.Store { return storetest.New(t) }
 func TestPanelAccessAndState(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
-	exID, err := st.CreateExchange(ctx, store.ExchangeSchedule{Title: "Новый год", BudgetMax: 25, Currency: "BYN",
+	exID, err := st.CreateExchange(ctx, store.ExchangeSchedule{Title: "Новый год", BudgetMin: 25,
 		OrderDeadline: time.Date(2026, 12, 13, 0, 0, 0, 0, time.UTC), DeliveryDeadline: time.Date(2026, 12, 25, 0, 0, 0, 0, time.UTC)})
 	if err != nil {
 		t.Fatal(err)

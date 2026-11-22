@@ -158,7 +158,7 @@ func TestExchangeScheduleAndHistory(t *testing.T) {
 
 	opens := time.Date(2026, 11, 25, 7, 0, 0, 0, time.UTC)
 	closes := time.Date(2026, 12, 5, 18, 0, 0, 0, time.UTC)
-	sch := store.ExchangeSchedule{Title: "Новый год", BudgetMax: 30, Currency: "BYN", RegistrationOpensAt: &opens, RegistrationClosesAt: &closes,
+	sch := store.ExchangeSchedule{Title: "Новый год", BudgetMin: 30, RegistrationOpensAt: &opens, RegistrationClosesAt: &closes,
 		OrderDeadline: time.Date(2026, 12, 13, 0, 0, 0, 0, time.UTC), DeliveryDeadline: time.Date(2026, 12, 25, 0, 0, 0, 0, time.UTC)}
 
 	firstID, err := st.CreateExchange(ctx, sch)
@@ -173,12 +173,12 @@ func TestExchangeScheduleAndHistory(t *testing.T) {
 		t.Fatalf("planned exchanges are not active, got %d", cur.ID)
 	}
 
-	sch.Title, sch.BudgetMax = "Новый год 2026", 35
+	sch.Title, sch.BudgetMin = "Новый год 2026", 35
 	if err := st.SaveExchangeSchedule(ctx, firstID, sch); err != nil {
 		t.Fatal(err)
 	}
 	got, err := st.ExchangeByID(ctx, firstID)
-	if err != nil || got.Title != "Новый год 2026" || *got.BudgetMax != 35 || !got.RegistrationOpensAt.Equal(opens) || !got.RegistrationClosesAt.Equal(closes) {
+	if err != nil || got.Title != "Новый год 2026" || *got.BudgetMin != 35 || !got.RegistrationOpensAt.Equal(opens) || !got.RegistrationClosesAt.Equal(closes) {
 		t.Fatalf("schedule not read back: %+v %v", got, err)
 	}
 
@@ -306,7 +306,7 @@ func TestDeleteDistributedExchange(t *testing.T) {
 func openExchange(t *testing.T, st *store.Store) store.Exchange {
 	t.Helper()
 	ctx := context.Background()
-	id, err := st.CreateExchange(ctx, store.ExchangeSchedule{Title: "t", BudgetMax: 25, Currency: "BYN",
+	id, err := st.CreateExchange(ctx, store.ExchangeSchedule{Title: "t", BudgetMin: 25,
 		OrderDeadline: time.Date(2026, 12, 13, 0, 0, 0, 0, time.UTC), DeliveryDeadline: time.Date(2026, 12, 25, 0, 0, 0, 0, time.UTC)})
 	if err != nil {
 		t.Fatal(err)

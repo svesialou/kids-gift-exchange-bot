@@ -105,6 +105,6 @@ func TestDeleteExchangeMessagesAndBans(t *testing.T) {
 func testSettings(title string) Settings {
 	opens := time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC)
 	closes := time.Date(2026, 12, 5, 20, 0, 0, 0, time.UTC)
-	return Settings{Title: title, BudgetMax: 25, Currency: "BYN", RegistrationOpensAt: &opens, RegistrationClosesAt: &closes,
+	return Settings{Title: title, BudgetMin: 25, RegistrationOpensAt: &opens, RegistrationClosesAt: &closes,
 		OrderDeadline: time.Date(2026, 12, 13, 0, 0, 0, 0, time.UTC), DeliveryBy: time.Date(2026, 12, 25, 0, 0, 0, 0, time.UTC)}
 }

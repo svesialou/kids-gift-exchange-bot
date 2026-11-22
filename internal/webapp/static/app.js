@@ -289,7 +289,7 @@ function exchangeRow(x) {
       h("span", { class: "badge" + (x.active ? " ordered" : "") }, x.status_title),
     ),
     h("div", { class: "muted" }, `Регистрация ${fmtLocal(s.registration_opens_at)} – ${fmtLocal(s.registration_closes_at)}`),
-    h("div", { class: "muted" }, `Отправить до ${fmtDate(s.order_deadline)} · завершение ${fmtDate(s.delivery_by)} · до ${s.budget_max} ${s.currency}`),
+    h("div", { class: "muted" }, `Отправить до ${fmtDate(s.order_deadline)} · завершение ${fmtDate(s.delivery_by)} · от ${s.budget_min} BYN`),
     x.families || x.gifts || x.violations ? h("div", { class: "row line" },
       h("span", null, `${x.families} семей · ${x.children} детей`),
       x.gifts ? h("span", { class: "muted" }, `получено ${x.received}/${x.gifts}`) : null,
@@ -382,7 +382,7 @@ function scheduleLines(s) {
     line("Регистрация", `${fmtLocal(s.registration_opens_at)} – ${fmtLocal(s.registration_closes_at)}`),
     line("Отправить подарки до", fmtDate(s.order_deadline) || "—"),
     line("Завершение", fmtDate(s.delivery_by) || "—"),
-    line("Бюджет", `до ${s.budget_max} ${s.currency}`),
+    line("Бюджет", `от ${s.budget_min} BYN`),
   );
 }
 
@@ -453,7 +453,7 @@ function stageCard(d) {
 function inviteText(s) {
   return [
     `Приглашаем детей в обмен подарками «${s.title}» 🎁`,
-    `Каждая семья дарит подарки детям из других семей: бот подскажет, кому и на какой ПВЗ Wildberries заказать. Бюджет подарка до ${s.budget_max} ${s.currency}.`,
+    `Каждая семья дарит подарки детям из других семей: бот подскажет, кому и на какой ПВЗ Wildberries заказать. Бюджет подарка от ${s.budget_min} BYN.`,
     "Регистрация до " + fmtLocal(s.registration_closes_at) + ".",
     "Отправить подарок нужно до " + fmtDate(s.order_deadline) + ", все подарки дети получат до " + fmtDate(s.delivery_by) + ".",
     "Чтобы участвовать, откройте бота по ссылке и зарегистрируйтесь:",
@@ -500,8 +500,7 @@ function settingsForm(ex) {
   const s = ex ? ex.settings : {};
   const regLocked = !!ex && !["draft", "registration_open"].includes(ex.status);
   const title = h("input", { type: "text", maxlength: "100", value: s.title || "", placeholder: "Например, Новый год 2026" });
-  const budget = h("input", { type: "number", min: "1", max: "100000", step: "1", inputmode: "numeric", value: s.budget_max || "", placeholder: "25" });
-  const currency = h("input", { type: "text", maxlength: "10", value: s.currency || "", placeholder: "BYN" });
+  const budget = h("input", { type: "number", min: "1", max: "100000", step: "1", inputmode: "numeric", value: s.budget_min || "", placeholder: "25" });
   const opens = h("input", { type: "datetime-local", value: s.registration_opens_at || "", disabled: regLocked || (!!ex && ex.status === "registration_open") });
   const closes = h("input", { type: "datetime-local", value: s.registration_closes_at || "", disabled: regLocked });
   const order = h("input", { type: "date", value: s.order_deadline || "" });
@@ -510,11 +509,11 @@ function settingsForm(ex) {
   const submit = async (ev) => {
     const btn = ev.currentTarget;
     const body = {
-      title: title.value.trim(), budget_max: Number(budget.value), currency: currency.value.trim(),
+      title: title.value.trim(), budget_min: Number(budget.value),
       registration_opens_at: opens.value, registration_closes_at: closes.value,
       order_deadline: order.value, delivery_by: delivery.value,
     };
-    if (!body.title || !body.budget_max || !body.currency || !opens.value || !closes.value || !order.value || !delivery.value) {
+    if (!body.title || !body.budget_min || !opens.value || !closes.value || !order.value || !delivery.value) {
       return toast("Заполните все поля", true);
     }
     if (ex) return run(`/api/exchanges/${ex.id}/settings`, body, null, btn);
@@ -534,7 +533,7 @@ function settingsForm(ex) {
   return card(
     ex ? h("h3", null, "Условия и расписание") : null,
     field("Название", title),
-    h("div", { class: "field-row" }, field("Бюджет подарка, до", budget), field("Валюта", currency)),
+    field("Бюджет подарка, от", budget),
     h("div", { class: "field-row even" }, field("Регистрация с", opens), field("Регистрация до", closes)),
     h("div", { class: "muted" }, regLocked
       ? "Регистрация уже прошла, её даты не меняются."

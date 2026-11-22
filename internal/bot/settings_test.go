@@ -12,7 +12,7 @@ func TestValidateSettings(t *testing.T) {
 	b := &Bot{now: time.Now, cfg: config.Config{Location: time.UTC}}
 	day := func(d int) *time.Time { t := time.Date(2026, 12, d, 0, 0, 0, 0, time.UTC); return &t }
 	valid := func() Settings {
-		return Settings{Title: "Новый год", BudgetMax: 25, Currency: "BYN",
+		return Settings{Title: "Новый год", BudgetMin: 25,
 			RegistrationOpensAt: day(1), RegistrationClosesAt: day(5), OrderDeadline: *day(13), DeliveryBy: *day(25)}
 	}
 	if s := valid(); b.validateSettings(&s) != nil {
@@ -24,10 +24,8 @@ func TestValidateSettings(t *testing.T) {
 		mutate func(*Settings)
 	}{
 		{"no title", func(s *Settings) { s.Title = "  " }},
-		{"zero budget", func(s *Settings) { s.BudgetMax = 0 }},
-		{"huge budget", func(s *Settings) { s.BudgetMax = 100001 }},
-		{"empty currency", func(s *Settings) { s.Currency = " " }},
-		{"long currency", func(s *Settings) { s.Currency = "белорусских" }},
+		{"zero budget", func(s *Settings) { s.BudgetMin = 0 }},
+		{"huge budget", func(s *Settings) { s.BudgetMin = 100001 }},
 		{"no registration start", func(s *Settings) { s.RegistrationOpensAt = nil }},
 		{"no registration end", func(s *Settings) { s.RegistrationClosesAt = nil }},
 		{"no send-by date", func(s *Settings) { s.OrderDeadline = time.Time{} }},

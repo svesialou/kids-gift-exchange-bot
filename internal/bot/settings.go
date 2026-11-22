@@ -15,13 +15,15 @@ import (
 // Settings are the schedule and conditions of an exchange. Organizers fill every field when creating it.
 type Settings struct {
 	Title                string
-	BudgetMax            int
-	Currency             string
+	BudgetMin            int
 	RegistrationOpensAt  *time.Time
 	RegistrationClosesAt *time.Time
 	OrderDeadline        time.Time
 	DeliveryBy           time.Time
 }
+
+// budgetCurrency is fixed: BYN is the only supported currency.
+const budgetCurrency = "BYN"
 
 // EffectiveSettings reads the settings saved for an exchange; missing values stay zero.
 func (b *Bot) EffectiveSettings(ex store.Exchange) Settings {
@@ -29,11 +31,8 @@ func (b *Bot) EffectiveSettings(ex store.Exchange) Settings {
 	if s.Title == "" && ex.ID != 0 {
 		s.Title = fmt.Sprintf("Обмен #%d", ex.ID)
 	}
-	if ex.BudgetMax != nil {
-		s.BudgetMax = *ex.BudgetMax
-	}
-	if ex.Currency != nil {
-		s.Currency = *ex.Currency
+	if ex.BudgetMin != nil {
+		s.BudgetMin = *ex.BudgetMin
 	}
 	if ex.OrderDeadline != nil {
 		s.OrderDeadline = *ex.OrderDeadline
@@ -65,14 +64,11 @@ func (b *Bot) Settings() Settings {
 
 func (b *Bot) validateSettings(s *Settings) error {
 	s.Title = strings.TrimSpace(s.Title)
-	s.Currency = strings.TrimSpace(s.Currency)
 	switch {
 	case s.Title == "" || utf8.RuneCountInString(s.Title) > 100:
 		return refuse("Название: от 1 до 100 символов.")
-	case s.BudgetMax < 1 || s.BudgetMax > 100000:
+	case s.BudgetMin < 1 || s.BudgetMin > 100000:
 		return refuse("Бюджет должен быть от 1 до 100000.")
-	case s.Currency == "" || utf8.RuneCountInString(s.Currency) > 10:
-		return refuse("Валюта: от 1 до 10 символов, например BYN.")
 	case s.RegistrationOpensAt == nil || s.RegistrationClosesAt == nil:
 		return refuse("Укажите начало и конец регистрации.")
 	case s.OrderDeadline.IsZero() || s.DeliveryBy.IsZero():
@@ -134,8 +130,7 @@ func (b *Bot) exchangeByID(ctx context.Context, id int64) (store.Exchange, error
 func toSchedule(s Settings) store.ExchangeSchedule {
 	return store.ExchangeSchedule{
 		Title:                s.Title,
-		BudgetMax:            s.BudgetMax,
-		Currency:             s.Currency,
+		BudgetMin:            s.BudgetMin,
 		RegistrationOpensAt:  s.RegistrationOpensAt,
 		RegistrationClosesAt: s.RegistrationClosesAt,
 		OrderDeadline:        s.OrderDeadline,
@@ -150,7 +145,7 @@ func (b *Bot) endOfDate(d time.Time) time.Time {
 
 func (b *Bot) budgetText() string {
 	s := b.Settings()
-	return fmt.Sprintf("до %d %s", s.BudgetMax, s.Currency)
+	return fmt.Sprintf("от %d %s", s.BudgetMin, budgetCurrency)
 }
 
 func (b *Bot) orderDeadlineText() string {

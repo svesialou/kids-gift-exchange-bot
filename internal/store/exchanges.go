@@ -21,8 +21,7 @@ type Exchange struct {
 
 	RegistrationOpensAt  *time.Time
 	RegistrationClosesAt *time.Time
-	BudgetMax            *int
-	Currency             *string
+	BudgetMin            *int
 	OrderDeadline        *time.Time
 	DeliveryDeadline     *time.Time
 
@@ -33,8 +32,7 @@ type Exchange struct {
 // ExchangeSchedule is what organizers set for an exchange; nil registration dates mean manual open/close.
 type ExchangeSchedule struct {
 	Title                string
-	BudgetMax            int
-	Currency             string
+	BudgetMin            int
 	RegistrationOpensAt  *time.Time
 	RegistrationClosesAt *time.Time
 	OrderDeadline        time.Time
@@ -42,16 +40,15 @@ type ExchangeSchedule struct {
 }
 
 const exchangeColumns = `e.id, e.status, e.title, e.created_at, e.distributed_at, e.completed_at,
-	e.registration_opens_at, e.registration_closes_at, e.gift_budget_max, e.gift_currency,
+	e.registration_opens_at, e.registration_closes_at, e.gift_budget_min,
 	e.order_deadline, e.delivery_deadline, e.order_checked_at, e.delivery_checked_at`
 
 func scanExchange(row interface{ Scan(...any) error }, extra ...any) (Exchange, error) {
 	var e Exchange
 	var distributed, completed, opens, closes, order, delivery, orderChecked, deliveryChecked sql.NullTime
 	var budget sql.NullInt64
-	var currency sql.NullString
 	dest := []any{&e.ID, &e.Status, &e.Title, &e.CreatedAt, &distributed, &completed,
-		&opens, &closes, &budget, &currency, &order, &delivery, &orderChecked, &deliveryChecked}
+		&opens, &closes, &budget, &order, &delivery, &orderChecked, &deliveryChecked}
 	if err := row.Scan(append(dest, extra...)...); err != nil {
 		return Exchange{}, err
 	}
@@ -61,10 +58,7 @@ func scanExchange(row interface{ Scan(...any) error }, extra ...any) (Exchange, 
 	e.OrderCheckedAt, e.DeliveryCheckedAt = nullTime(orderChecked), nullTime(deliveryChecked)
 	if budget.Valid {
 		v := int(budget.Int64)
-		e.BudgetMax = &v
-	}
-	if currency.Valid {
-		e.Currency = &currency.String
+		e.BudgetMin = &v
 	}
 	return e, nil
 }
@@ -135,9 +129,9 @@ func (s *Store) ListExchanges(ctx context.Context) ([]ExchangeSummary, error) {
 // CreateExchange adds a planned (draft) exchange; organizers open its registration by hand later.
 func (s *Store) CreateExchange(ctx context.Context, sch ExchangeSchedule) (int64, error) {
 	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO exchanges (status, title, gift_budget_max, gift_currency, registration_opens_at, registration_closes_at, order_deadline, delivery_deadline)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		domain.ExchangeDraft, sch.Title, sch.BudgetMax, sch.Currency, utcPtr(sch.RegistrationOpensAt), utcPtr(sch.RegistrationClosesAt),
+		INSERT INTO exchanges (status, title, gift_budget_min, registration_opens_at, registration_closes_at, order_deadline, delivery_deadline)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		domain.ExchangeDraft, sch.Title, sch.BudgetMin, utcPtr(sch.RegistrationOpensAt), utcPtr(sch.RegistrationClosesAt),
 		sch.OrderDeadline.Format(time.DateOnly), sch.DeliveryDeadline.Format(time.DateOnly))
 	if err != nil {
 		return 0, fmt.Errorf("insert exchange: %w", err)
@@ -147,10 +141,10 @@ func (s *Store) CreateExchange(ctx context.Context, sch ExchangeSchedule) (int64
 
 func (s *Store) SaveExchangeSchedule(ctx context.Context, id int64, sch ExchangeSchedule) error {
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE exchanges SET title = ?, gift_budget_max = ?, gift_currency = ?, registration_opens_at = ?,
+		UPDATE exchanges SET title = ?, gift_budget_min = ?, registration_opens_at = ?,
 			registration_closes_at = ?, order_deadline = ?, delivery_deadline = ?
 		WHERE id = ?`,
-		sch.Title, sch.BudgetMax, sch.Currency, utcPtr(sch.RegistrationOpensAt), utcPtr(sch.RegistrationClosesAt),
+		sch.Title, sch.BudgetMin, utcPtr(sch.RegistrationOpensAt), utcPtr(sch.RegistrationClosesAt),
 		sch.OrderDeadline.Format(time.DateOnly), sch.DeliveryDeadline.Format(time.DateOnly), id)
 	if err != nil {
 		return fmt.Errorf("save exchange schedule: %w", err)

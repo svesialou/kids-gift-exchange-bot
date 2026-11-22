@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ type Exchange struct {
 	ID            int64
 	Status        domain.ExchangeStatus
 	Title         string
+	InviteCode    string
 	CreatedAt     time.Time
 	DistributedAt *time.Time
 	CompletedAt   *time.Time
@@ -39,7 +41,7 @@ type ExchangeSchedule struct {
 	DeliveryDeadline     time.Time
 }
 
-const exchangeColumns = `e.id, e.status, e.title, e.created_at, e.distributed_at, e.completed_at,
+const exchangeColumns = `e.id, e.status, e.title, e.invite_code, e.created_at, e.distributed_at, e.completed_at,
 	e.registration_opens_at, e.registration_closes_at, e.gift_budget_min,
 	e.order_deadline, e.delivery_deadline, e.order_checked_at, e.delivery_checked_at`
 
@@ -47,7 +49,7 @@ func scanExchange(row interface{ Scan(...any) error }, extra ...any) (Exchange, 
 	var e Exchange
 	var distributed, completed, opens, closes, order, delivery, orderChecked, deliveryChecked sql.NullTime
 	var budget sql.NullInt64
-	dest := []any{&e.ID, &e.Status, &e.Title, &e.CreatedAt, &distributed, &completed,
+	dest := []any{&e.ID, &e.Status, &e.Title, &e.InviteCode, &e.CreatedAt, &distributed, &completed,
 		&opens, &closes, &budget, &order, &delivery, &orderChecked, &deliveryChecked}
 	if err := row.Scan(append(dest, extra...)...); err != nil {
 		return Exchange{}, err
@@ -128,15 +130,31 @@ func (s *Store) ListExchanges(ctx context.Context) ([]ExchangeSummary, error) {
 
 // CreateExchange adds a planned (draft) exchange; organizers open its registration by hand later.
 func (s *Store) CreateExchange(ctx context.Context, sch ExchangeSchedule) (int64, error) {
+	code, err := newInviteCode()
+	if err != nil {
+		return 0, err
+	}
 	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO exchanges (status, title, gift_budget_min, registration_opens_at, registration_closes_at, order_deadline, delivery_deadline)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		domain.ExchangeDraft, sch.Title, sch.BudgetMin, utcPtr(sch.RegistrationOpensAt), utcPtr(sch.RegistrationClosesAt),
+		INSERT INTO exchanges (status, title, invite_code, gift_budget_min, registration_opens_at, registration_closes_at, order_deadline, delivery_deadline)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		domain.ExchangeDraft, sch.Title, code, sch.BudgetMin, utcPtr(sch.RegistrationOpensAt), utcPtr(sch.RegistrationClosesAt),
 		sch.OrderDeadline.Format(time.DateOnly), sch.DeliveryDeadline.Format(time.DateOnly))
 	if err != nil {
 		return 0, fmt.Errorf("insert exchange: %w", err)
 	}
 	return res.LastInsertId()
+}
+
+func newInviteCode() (string, error) {
+	const alphabet = "abcdefghijkmnpqrstuvwxyz23456789"
+	b := make([]byte, 12)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("invite code: %w", err)
+	}
+	for i := range b {
+		b[i] = alphabet[int(b[i])%len(alphabet)]
+	}
+	return string(b), nil
 }
 
 func (s *Store) SaveExchangeSchedule(ctx context.Context, id int64, sch ExchangeSchedule) error {

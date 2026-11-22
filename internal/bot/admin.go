@@ -366,11 +366,11 @@ func (b *Bot) Broadcast(ctx context.Context, text string) (int, error) {
 	return len(ids), nil
 }
 
-func (b *Bot) InviteLink() string {
-	if b.cfg.InviteCode == "" {
+func (b *Bot) InviteLink(ex store.Exchange) string {
+	if ex.InviteCode == "" {
 		return "https://t.me/" + b.api.Self.UserName
 	}
-	return fmt.Sprintf("https://t.me/%s?start=%s", b.api.Self.UserName, b.cfg.InviteCode)
+	return fmt.Sprintf("https://t.me/%s?start=%s", b.api.Self.UserName, ex.InviteCode)
 }
 
 // ---------- chat commands ----------
@@ -394,7 +394,11 @@ func (b *Bot) handleAdminCommand(ctx context.Context, msg *tgbotapi.Message, cmd
 	case "admin":
 		b.sendAdminPanelButton(tgID, adminHelp)
 	case "invite":
-		b.send(tgID, "Ссылка-приглашение:\n"+esc(b.InviteLink()), nil)
+		ex, err := b.store.ActiveExchange(ctx)
+		if err != nil {
+			return false, err
+		}
+		b.send(tgID, "Ссылка-приглашение:\n"+esc(b.InviteLink(ex)), nil)
 	case "open", "close", "finish", "distribute", "new_exchange":
 		b.sendAdminPanelButton(tgID, "Обмены создаются, открываются, распределяются и завершаются в панели.")
 	case "families":

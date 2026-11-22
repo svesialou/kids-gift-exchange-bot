@@ -290,7 +290,7 @@ func (s *Server) buildExchange(ctx context.Context, ex store.Exchange) (exchange
 		out.Assignments = append(out.Assignments, s.assignmentToJSON(a, now))
 	}
 
-	out.Invite = s.admin.InviteLink()
+	out.Invite = s.admin.InviteLink(ex)
 	if out.Preview, err = s.admin.PreviewDistribution(ctx, ex.ID); err != nil {
 		return out, err
 	}

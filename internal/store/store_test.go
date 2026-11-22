@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"math/rand"
+	"regexp"
 	"testing"
 	"time"
 
@@ -148,6 +149,39 @@ func TestExchangeLifecycle(t *testing.T) {
 	fresh, err = st.MarkReminderSent(ctx, other.ID, domain.RemindGiverOrder, "2026-12-10")
 	mustFalse(t, fresh, err, "duplicate reminder same day")
 }
+
+func TestEveryExchangeGetsItsOwnInviteCode(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	sch := store.ExchangeSchedule{Title: "Новый год", BudgetMin: 25,
+		OrderDeadline: time.Date(2026, 12, 13, 0, 0, 0, 0, time.UTC), DeliveryDeadline: time.Date(2026, 12, 25, 0, 0, 0, 0, time.UTC)}
+	ids := map[string]int64{}
+	for _, name := range []string{"first", "second"} {
+		id, err := st.CreateExchange(ctx, sch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[name] = id
+	}
+	first, err := st.ExchangeByID(ctx, ids["first"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := st.ExchangeByID(ctx, ids["second"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, code := range []string{first.InviteCode, second.InviteCode} {
+		if !inviteCodeRe.MatchString(code) {
+			t.Fatalf("invite code must be 12 url-safe characters, got %q", code)
+		}
+	}
+	if first.InviteCode == second.InviteCode {
+		t.Fatalf("exchanges must not share an invite code, both %q", first.InviteCode)
+	}
+}
+
+var inviteCodeRe = regexp.MustCompile(`^[a-z2-9]{12}$`)
 
 func TestExchangeScheduleAndHistory(t *testing.T) {
 	st := newTestStore(t)

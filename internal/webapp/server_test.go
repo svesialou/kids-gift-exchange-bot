@@ -46,7 +46,9 @@ func (f *fakeAdmin) AddViolation(context.Context, int64, int64, string) error   
 func (f *fakeAdmin) SetViolationDismissed(context.Context, int64, bool) error      { return nil }
 func (f *fakeAdmin) UpdateSettings(context.Context, int64, bot.Settings) error     { return nil }
 func (f *fakeAdmin) Texts() *texts.Service                                         { return f.texts }
-func (f *fakeAdmin) InviteLink() string                                            { return "https://t.me/test_bot?start=x" }
+func (f *fakeAdmin) InviteLink(ex store.Exchange) string {
+	return "https://t.me/test_bot?start=" + ex.InviteCode
+}
 
 func testStore(t *testing.T) *store.Store { return storetest.New(t) }
 

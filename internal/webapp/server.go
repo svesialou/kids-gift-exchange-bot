@@ -33,7 +33,7 @@ type Admin interface {
 	RemindNow(ctx context.Context) (int, error)
 	Reassign(ctx context.Context, childID, giverID int64) error
 	Broadcast(ctx context.Context, text string) (int, error)
-	InviteLink() string
+	InviteLink(ex store.Exchange) string
 	EffectiveSettings(ex store.Exchange) bot.Settings
 	UpdateSettings(ctx context.Context, id int64, s bot.Settings) error
 	SetBanned(ctx context.Context, userIDs []int64, banned bool, reason string) (int, error)

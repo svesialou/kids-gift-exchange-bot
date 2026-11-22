@@ -42,7 +42,7 @@ func (b *Bot) onStart(ctx context.Context, msg *tgbotapi.Message, payload string
 		b.send(tgID, b.tx("reg.closed"), tgbotapi.NewRemoveKeyboard(true))
 		return nil
 	}
-	if b.cfg.InviteCode != "" && payload != b.cfg.InviteCode && !b.cfg.IsAdmin(tgID) {
+	if ex.InviteCode != "" && payload != ex.InviteCode && !b.cfg.IsAdmin(tgID) {
 		b.send(tgID, b.tx("reg.need_invite"), tgbotapi.NewRemoveKeyboard(true))
 		return nil
 	}

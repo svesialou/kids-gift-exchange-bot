@@ -4,7 +4,7 @@ Telegram bot for a gift exchange between families with kids. One adult per famil
 
 ## Flow
 
-1. Organizer runs `/open` and shares the `/invite` link.
+1. Organizer runs `/open` and shares the `/invite` link. Every exchange has its own invite code, so a link only starts registration into that exchange.
 2. Parents register: first name, last name, phone, ПВЗ address. Then they add children: first name, last name, age, gender, optional wishes.
 3. Organizer runs `/close`, checks `/families`, then `/distribute` and confirms. Distribution happens once and cannot be repeated.
 4. Each family gives as many gifts as it brought children and never gets its own children. The rule fails only if one family brings more than half of all children.
@@ -32,7 +32,7 @@ The scheduler checks assignments every `SCHEDULER_INTERVAL`. Every kind of remin
 
 Organizers create every exchange by hand in the panel and fill all of its fields: title, the minimum gift budget in BYN, registration start and end (date and time), the date gifts must be sent by, and the end date. Nothing is created automatically and there are no default values.
 
-- Several exchanges can be planned; only one runs at a time (registration open, closed, or gifts distributed).
+- Several exchanges can be planned; only one runs at a time (registration open, closed, or gifts distributed). Every exchange has its own invite code and link: parents join a specific planned exchange through its link, and any other start payload is refused.
 - Registration opens only when an organizer presses the button, and only between the exchange's registration start and end, while no other exchange is running.
 - At the registration end the bot closes it and distributes the children right away.
 - After the end of the send-by day givers who have not marked «Заказал(а)» get an `order_overdue` violation.

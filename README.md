@@ -30,7 +30,7 @@ The scheduler checks assignments every `SCHEDULER_INTERVAL`. Every kind of remin
 
 ## Exchanges and schedule
 
-Organizers create every exchange by hand in the panel and fill all of its fields: title, gift budget and currency, registration start and end (date and time), the date gifts must be sent by, and the end date. Nothing is created automatically and there are no default values.
+Organizers create every exchange by hand in the panel and fill all of its fields: title, the minimum gift budget in BYN, registration start and end (date and time), the date gifts must be sent by, and the end date. Nothing is created automatically and there are no default values.
 
 - Several exchanges can be planned; only one runs at a time (registration open, closed, or gifts distributed).
 - Registration opens only when an organizer presses the button, and only between the exchange's registration start and end, while no other exchange is running.
@@ -59,7 +59,7 @@ Commands are hidden from the menu and work only for ids from `ADMIN_IDS`. `/admi
 
 All settings come from environment variables, see `.env.example`. Required: `TELEGRAM_BOT_TOKEN`, `DB_PASSWORD`. Reminder hours can be changed with a restart.
 
-Title, budget, currency and dates are set per exchange in the panel. Migrations run automatically on start.
+The title, the minimum gift budget in BYN (no currency choice) and the dates are set per exchange in the panel. Migrations run automatically on start.
 
 ## Development
 

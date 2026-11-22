@@ -68,7 +68,7 @@ func TestScheduleDrivesExchange(t *testing.T) {
 	date := func(d int) time.Time { return time.Date(2026, 12, d, 0, 0, 0, 0, time.UTC) }
 	opens := time.Date(2026, 11, 25, 10, 0, 0, 0, minsk)
 	closes := time.Date(2026, 12, 5, 20, 0, 0, 0, minsk)
-	id, err := b.NewExchange(ctx, Settings{Title: "Новый год", BudgetMax: 30, Currency: "BYN",
+	id, err := b.NewExchange(ctx, Settings{Title: "Новый год", BudgetMin: 30,
 		RegistrationOpensAt: &opens, RegistrationClosesAt: &closes, OrderDeadline: date(13), DeliveryBy: date(25)})
 	if err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func TestScheduleDrivesExchange(t *testing.T) {
 	if !strings.Contains(tg.textsTo("100"), "Распределение готово") {
 		t.Fatalf("giver did not get the distribution message: %q", tg.textsTo("100"))
 	}
-	if !strings.Contains(tg.textsTo("100"), "до 30 BYN") {
+	if !strings.Contains(tg.textsTo("100"), "от 30 BYN") {
 		t.Fatalf("cards must use the exchange budget: %q", tg.textsTo("100"))
 	}
 

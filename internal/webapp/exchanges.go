@@ -73,8 +73,7 @@ type violationJSON struct {
 
 type settingsJSON struct {
 	Title                string `json:"title"`
-	BudgetMax            int    `json:"budget_max"`
-	Currency             string `json:"currency"`
+	BudgetMin            int    `json:"budget_min"`
 	RegistrationOpensAt  string `json:"registration_opens_at"`
 	RegistrationClosesAt string `json:"registration_closes_at"`
 	OrderDeadline        string `json:"order_deadline"`
@@ -121,7 +120,7 @@ func person(u store.User) personJSON {
 }
 
 func (s *Server) settingsToJSON(st bot.Settings) settingsJSON {
-	out := settingsJSON{Title: st.Title, BudgetMax: st.BudgetMax, Currency: st.Currency}
+	out := settingsJSON{Title: st.Title, BudgetMin: st.BudgetMin}
 	if st.RegistrationOpensAt != nil {
 		out.RegistrationOpensAt = st.RegistrationOpensAt.In(s.cfg.Location).Format(localDateTime)
 	}
@@ -138,7 +137,7 @@ func (s *Server) settingsToJSON(st bot.Settings) settingsJSON {
 }
 
 func (s *Server) settingsFromJSON(in settingsJSON) (bot.Settings, error) {
-	out := bot.Settings{Title: in.Title, BudgetMax: in.BudgetMax, Currency: in.Currency}
+	out := bot.Settings{Title: in.Title, BudgetMin: in.BudgetMin}
 	var err error
 	parseLocal := func(v string) *time.Time {
 		if v == "" || err != nil {

@@ -11,7 +11,6 @@ import (
 type Config struct {
 	TelegramToken string
 	AdminIDs      []int64
-	InviteCode    string
 
 	// WebAppURL is the public HTTPS address of the admin panel; empty disables the HTTP server.
 	WebAppURL string
@@ -75,7 +74,6 @@ func Load() (Config, error) {
 
 	cfg := Config{
 		TelegramToken: str("TELEGRAM_BOT_TOKEN", ""),
-		InviteCode:    str("INVITE_CODE", ""),
 		WebAppURL:     strings.TrimRight(str("WEBAPP_URL", ""), "/"),
 		HTTPAddr:      str("HTTP_ADDR", "127.0.0.1:18090"),
 		DB: DB{

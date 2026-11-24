@@ -154,6 +154,49 @@ func (s *Server) handleBan(w http.ResponseWriter, r *http.Request) {
 	s.reply(w, msg, err)
 }
 
+func (s *Server) handleEditUser(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		FirstName string `json:"first_name"`
+		LastName  string `json:"last_name"`
+		Phone     string `json:"phone"`
+		PVZ       string `json:"pvz"`
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	s.reply(w, "Изменения сохранены.", s.admin.EditParent(r.Context(), id, req.FirstName, req.LastName, req.Phone, req.PVZ))
+}
+
+func (s *Server) handleEditChild(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		FirstName string `json:"first_name"`
+		LastName  string `json:"last_name"`
+		Age       int    `json:"age"`
+		Gender    string `json:"gender"`
+		Wishes    string `json:"wishes"`
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	s.reply(w, "Изменения сохранены.", s.admin.EditChild(r.Context(), id, req.FirstName, req.LastName, req.Age, req.Gender, req.Wishes))
+}
+
+func (s *Server) handleDeleteChild(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	s.reply(w, "Ребёнок удалён.", s.admin.DeleteChild(r.Context(), id))
+}
+
 func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		UserIDs []int64 `json:"user_ids"`

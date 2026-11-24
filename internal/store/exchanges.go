@@ -105,8 +105,8 @@ type ExchangeSummary struct {
 func (s *Store) ListExchanges(ctx context.Context) ([]ExchangeSummary, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT `+exchangeColumns+`,
-			(SELECT COUNT(DISTINCT c.parent_user_id) FROM children c WHERE c.exchange_id = e.id),
-			(SELECT COUNT(*) FROM children c WHERE c.exchange_id = e.id),
+			(SELECT COUNT(DISTINCT c.parent_user_id) FROM children c WHERE c.exchange_id = e.id AND c.deleted_at IS NULL),
+			(SELECT COUNT(*) FROM children c WHERE c.exchange_id = e.id AND c.deleted_at IS NULL),
 			(SELECT COUNT(*) FROM assignments a WHERE a.exchange_id = e.id),
 			(SELECT COUNT(*) FROM assignments a WHERE a.exchange_id = e.id AND a.status = ?),
 			(SELECT COUNT(*) FROM violations v WHERE v.exchange_id = e.id AND v.dismissed_at IS NULL)

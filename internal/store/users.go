@@ -66,6 +66,12 @@ func (s *Store) SaveUser(ctx context.Context, u User) error {
 	return nil
 }
 
+func (s *Store) UpdateUser(ctx context.Context, id int64, u User) (bool, error) {
+	return s.exec1(ctx, "update user", `
+		UPDATE users SET first_name = ?, last_name = ?, phone = ?, pvz_address = ?
+		WHERE id = ?`, u.FirstName, u.LastName, u.Phone, u.PVZAddress, id)
+}
+
 func (s *Store) SetBanned(ctx context.Context, userID int64, banned bool, reason string, now time.Time) (bool, error) {
 	if !banned {
 		return s.exec1(ctx, "unban user", `UPDATE users SET banned_at = NULL, ban_reason = '' WHERE id = ?`, userID)
@@ -83,7 +89,7 @@ func (s *Store) Participants(ctx context.Context, exchangeID int64) ([]Participa
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT `+userColumns+`, COUNT(c.id)
 		FROM users u
-		JOIN children c ON c.parent_user_id = u.id AND c.exchange_id = ?
+		JOIN children c ON c.parent_user_id = u.id AND c.exchange_id = ? AND c.deleted_at IS NULL
 		GROUP BY u.id
 		ORDER BY u.last_name, u.first_name`, exchangeID)
 	if err != nil {
@@ -124,7 +130,7 @@ type UserStat struct {
 func (s *Store) UserStats(ctx context.Context) ([]UserStat, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT `+userColumns+`,
-			(SELECT COUNT(DISTINCT c.exchange_id) FROM children c WHERE c.parent_user_id = u.id),
+			(SELECT COUNT(DISTINCT c.exchange_id) FROM children c WHERE c.parent_user_id = u.id AND c.deleted_at IS NULL),
 			(SELECT COUNT(*) FROM assignments a WHERE a.giver_user_id = u.id),
 			(SELECT COUNT(*) FROM violations v WHERE v.user_id = u.id AND v.dismissed_at IS NULL)
 		FROM users u
@@ -170,7 +176,7 @@ type ChildWithExchange struct {
 func (s *Store) ChildrenOfUser(ctx context.Context, parentID int64) ([]ChildWithExchange, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, parent_user_id, first_name, last_name, age, gender, wishes, exchange_id
-		FROM children WHERE parent_user_id = ? ORDER BY exchange_id DESC, id`, parentID)
+		FROM children WHERE parent_user_id = ? AND deleted_at IS NULL ORDER BY exchange_id DESC, id`, parentID)
 	if err != nil {
 		return nil, fmt.Errorf("children of user: %w", err)
 	}
@@ -184,6 +190,21 @@ func (s *Store) ChildrenOfUser(ctx context.Context, parentID int64) ([]ChildWith
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) ChildByID(ctx context.Context, id int64) (ChildWithExchange, error) {
+	var c ChildWithExchange
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, parent_user_id, first_name, last_name, age, gender, wishes, exchange_id
+		FROM children WHERE id = ? AND deleted_at IS NULL`, id).
+		Scan(&c.ID, &c.ParentID, &c.FirstName, &c.LastName, &c.Age, &c.Gender, &c.Wishes, &c.ExchangeID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ChildWithExchange{}, ErrNotFound
+	}
+	if err != nil {
+		return ChildWithExchange{}, fmt.Errorf("child by id: %w", err)
+	}
+	return c, nil
 }
 
 // UsersByIDs returns the users that exist among ids; unknown ids are skipped.

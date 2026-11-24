@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"math/rand"
 	"regexp"
 	"testing"
@@ -335,6 +336,135 @@ func TestDeleteDistributedExchange(t *testing.T) {
 	if cur, _ := st.ActiveExchange(ctx); cur.ID != 0 {
 		t.Fatalf("no exchange must remain, got %d", cur.ID)
 	}
+}
+
+func TestUpdateUser(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	u := mustUser(t, st, 1)
+	ok, err := st.UpdateUser(ctx, u.ID, store.User{FirstName: "Анна", LastName: "Петрова", Phone: "+375291112233", PVZAddress: "Гомель"})
+	mustTrue(t, ok, err, "update user")
+
+	got, err := st.UserByID(ctx, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := store.User{ID: u.ID, TgID: 1, FirstName: "Анна", LastName: "Петрова", Phone: "+375291112233", PVZAddress: "Гомель", BanReason: ""}
+	if got.TgID != want.TgID || got.TgUsername != want.TgUsername || got.FirstName != want.FirstName ||
+		got.LastName != want.LastName || got.Phone != want.Phone || got.PVZAddress != want.PVZAddress {
+		t.Fatalf("UserByID after update = %+v, want %+v", got, want)
+	}
+
+	ok, err = st.UpdateUser(ctx, u.ID+1000, store.User{FirstName: "x"})
+	mustFalse(t, ok, err, "update nonexistent user")
+}
+
+func TestUpdateChild(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	ex := openExchange(t, st)
+	a := mustUser(t, st, 1)
+	for _, name := range []struct{ first, last, wishes string }{
+		{"Коля", "Иванов", "мячик"},
+		{"Маша", "Иванова", "кукла"},
+	} {
+		if err := st.AddChild(ctx, ex.ID, store.Child{ParentID: a.ID, FirstName: name.first, LastName: name.last, Age: 6, Gender: "boy", Wishes: name.wishes}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	kids, err := st.ChildrenOf(ctx, ex.ID, a.ID)
+	if err != nil || len(kids) != 2 {
+		t.Fatalf("children of user: %d %v", len(kids), err)
+	}
+	updatedID, other := kids[0].ID, kids[1]
+
+	ok, err := st.UpdateChild(ctx, updatedID, store.Child{FirstName: "Никита", LastName: "Петров", Age: 9, Gender: "boy", Wishes: "конструктор"})
+	mustTrue(t, ok, err, "update child")
+
+	kids, err = st.ChildrenOf(ctx, ex.ID, a.ID)
+	if err != nil || len(kids) != 2 {
+		t.Fatalf("children of user after update: %d %v", len(kids), err)
+	}
+	want := store.Child{ID: updatedID, ParentID: a.ID, FirstName: "Никита", LastName: "Петров", Age: 9, Gender: "boy", Wishes: "конструктор"}
+	if kids[0] != want {
+		t.Fatalf("updated child = %+v, want %+v", kids[0], want)
+	}
+	wantOther := store.Child{ID: other.ID, ParentID: a.ID, FirstName: "Маша", LastName: "Иванова", Age: 6, Gender: "boy", Wishes: "кукла"}
+	if kids[1] != wantOther {
+		t.Fatalf("untouched child = %+v, want %+v", kids[1], wantOther)
+	}
+
+	ok, err = st.SoftDeleteChild(ctx, other.ID)
+	mustTrue(t, ok, err, "soft delete other child")
+	ok, err = st.UpdateChild(ctx, other.ID, store.Child{FirstName: "x"})
+	mustFalse(t, ok, err, "update soft-deleted child")
+	ok, err = st.UpdateChild(ctx, other.ID+1000, store.Child{FirstName: "x"})
+	mustFalse(t, ok, err, "update nonexistent child")
+}
+
+func TestSoftDeleteChild(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	ex := openExchange(t, st)
+	a := mustUser(t, st, 1)
+	for _, u := range []store.User{a, a, mustUser(t, st, 2)} {
+		if err := st.AddChild(ctx, ex.ID, store.Child{ParentID: u.ID, FirstName: "Kid", LastName: "L", Age: 5, Gender: "boy"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	kids, err := st.ChildrenOf(ctx, ex.ID, a.ID)
+	if err != nil || len(kids) != 2 {
+		t.Fatalf("children of user: %d %v", len(kids), err)
+	}
+	victim, sibling := kids[0], kids[1]
+
+	ok, err := st.ChildHasAssignment(ctx, victim.ID)
+	if err != nil || ok {
+		t.Fatalf("ChildHasAssignment before distribute = %v, %v", ok, err)
+	}
+
+	ok, err = st.SoftDeleteChild(ctx, victim.ID)
+	mustTrue(t, ok, err, "soft delete child")
+
+	rest, err := st.ChildrenOf(ctx, ex.ID, a.ID)
+	if err != nil || len(rest) != 1 || rest[0].ID != sibling.ID {
+		t.Fatalf("children of user after soft delete: %+v %v", rest, err)
+	}
+	if _, err := st.ChildByID(ctx, rest[0].ID); err != nil {
+		t.Fatalf("ChildByID remaining child: %v", err)
+	}
+	_, err = st.ChildByID(ctx, victim.ID)
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ChildByID soft-deleted child = %v, want ErrNotFound", err)
+	}
+
+	participants, err := st.Participants(ctx, ex.ID)
+	if err != nil || len(participants) != 2 {
+		t.Fatalf("participants after soft delete: %d %v", len(participants), err)
+	}
+	for _, p := range participants {
+		if p.ID == a.ID && p.Children != 1 {
+			t.Fatalf("parent children count = %d, want 1", p.Children)
+		}
+	}
+
+	ok, err = st.SoftDeleteChild(ctx, victim.ID)
+	mustFalse(t, ok, err, "soft delete twice")
+
+	_, _ = st.TransitionExchange(ctx, ex.ID, domain.ExchangeClosed, domain.ExchangeOpen)
+	if _, err := st.Distribute(ctx, ex.ID, func(r []domain.ChildRef) ([]domain.Pair, error) {
+		return domain.Distribute(r, rand.New(rand.NewSource(1)))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ok, err = st.ChildHasAssignment(ctx, rest[0].ID)
+	mustTrue(t, ok, err, "remaining child has assignment")
+
+	ok, err = st.SoftDeleteChild(ctx, rest[0].ID)
+	mustFalse(t, ok, err, "soft delete child with assignment")
 }
 
 func openExchange(t *testing.T, st *store.Store) store.Exchange {

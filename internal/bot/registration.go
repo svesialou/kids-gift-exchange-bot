@@ -109,7 +109,7 @@ func (b *Bot) handleRegistrationStep(ctx context.Context, msg *tgbotapi.Message,
 		b.send(tgID, b.tx("reg.ask_pvz"), b.cancelKeyboard())
 
 	case stateRegPVZ:
-		if utf8.RuneCountInString(text) < 5 || utf8.RuneCountInString(text) > 500 {
+		if err := validateParentContact(sess.Data["phone"], text); err != nil {
 			b.send(tgID, b.tx("reg.bad_pvz"), nil)
 			return nil
 		}
@@ -210,4 +210,21 @@ func validPhone(s string) bool {
 		}
 	}
 	return digits >= 7 && digits <= 15
+}
+
+func validPVZ(s string) bool {
+	n := utf8.RuneCountInString(s)
+	return n >= 5 && n <= 500
+}
+
+// validateParentContact applies the registration rules for phone and PVZ address
+// to the admin panel edits too; the phone must already be trimmed.
+func validateParentContact(phone, pvz string) error {
+	if !validPhone(phone) {
+		return refuse("Телефон: от 7 до 15 цифр, допускаются + - ( ).")
+	}
+	if !validPVZ(pvz) {
+		return refuse("Адрес ПВЗ: от 5 до 500 символов.")
+	}
+	return nil
 }

@@ -102,10 +102,32 @@ func (s *Store) DeleteChild(ctx context.Context, exchangeID, parentID, childID i
 	return n == 1, nil
 }
 
+func (s *Store) SoftDeleteChild(ctx context.Context, id int64) (bool, error) {
+	return s.exec1(ctx, "soft delete child", `
+		UPDATE children SET deleted_at = ?
+		WHERE id = ? AND deleted_at IS NULL
+		AND NOT EXISTS (SELECT 1 FROM assignments WHERE child_id = ?)`, time.Now().UTC(), id, id)
+}
+
+func (s *Store) UpdateChild(ctx context.Context, id int64, c Child) (bool, error) {
+	return s.exec1(ctx, "update child", `
+		UPDATE children SET first_name = ?, last_name = ?, age = ?, gender = ?, wishes = ?
+		WHERE id = ? AND deleted_at IS NULL`,
+		c.FirstName, c.LastName, c.Age, c.Gender, c.Wishes, id)
+}
+
+func (s *Store) ChildHasAssignment(ctx context.Context, id int64) (bool, error) {
+	var exists bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM assignments WHERE child_id = ?)`, id).Scan(&exists); err != nil {
+		return false, fmt.Errorf("child has assignment: %w", err)
+	}
+	return exists, nil
+}
+
 func (s *Store) ChildrenOf(ctx context.Context, exchangeID, parentID int64) ([]Child, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, parent_user_id, first_name, last_name, age, gender, wishes
-		FROM children WHERE exchange_id = ? AND parent_user_id = ? ORDER BY id`, exchangeID, parentID)
+		FROM children WHERE exchange_id = ? AND parent_user_id = ? AND deleted_at IS NULL ORDER BY id`, exchangeID, parentID)
 	if err != nil {
 		return nil, fmt.Errorf("children of: %w", err)
 	}
@@ -125,7 +147,7 @@ func (s *Store) ChildrenOf(ctx context.Context, exchangeID, parentID int64) ([]C
 func (s *Store) ExchangeChildren(ctx context.Context, exchangeID int64) ([]Child, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, parent_user_id, first_name, last_name, age, gender, wishes
-		FROM children WHERE exchange_id = ? ORDER BY parent_user_id, id`, exchangeID)
+		FROM children WHERE exchange_id = ? AND deleted_at IS NULL ORDER BY parent_user_id, id`, exchangeID)
 	if err != nil {
 		return nil, fmt.Errorf("exchange children: %w", err)
 	}
@@ -152,7 +174,7 @@ type querier interface {
 func (s *Store) childRefs(ctx context.Context, q querier, exchangeID int64, forUpdate bool) ([]domain.ChildRef, error) {
 	// Children of banned parents stay registered but are left out of the distribution.
 	query := `SELECT c.id, c.parent_user_id FROM children c JOIN users u ON u.id = c.parent_user_id
-		WHERE c.exchange_id = ? AND u.banned_at IS NULL ORDER BY c.id`
+		WHERE c.exchange_id = ? AND u.banned_at IS NULL AND c.deleted_at IS NULL ORDER BY c.id`
 	if forUpdate {
 		query += ` FOR UPDATE OF c`
 	}

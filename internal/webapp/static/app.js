@@ -577,10 +577,53 @@ function matches(values) {
 }
 
 function kidLine(c) {
-  return h("div", { class: "kid" },
-    h("div", null, `${c.name}, ${ageText(c.age)}, ${c.gender === "girl" ? "девочка" : "мальчик"}`),
-    c.wishes ? h("div", { class: "muted" }, "Пожелания: " + c.wishes) : null,
-  );
+  const wrap = h("div", { class: "kid" });
+  const showInfo = () => {
+    wrap.replaceChildren(
+      h("div", null, `${c.name}, ${ageText(c.age)}, ${c.gender === "girl" ? "девочка" : "мальчик"}`),
+      c.wishes ? h("div", { class: "muted" }, "Пожелания: " + c.wishes) : null,
+      h("div", { class: "row line" },
+        h("button", { class: "btn small secondary", type: "button", onclick: showForm }, "Изменить"),
+        h("button", {
+          class: "btn small danger", type: "button",
+          onclick: (ev) => run(`/api/children/${c.id}/delete`, {},
+            `Удалить ребёнка ${c.name}? Он выпадет из обмена.`, ev.currentTarget),
+        }, "Удалить"),
+      ),
+    );
+  };
+  const showForm = () => {
+    const first = h("input", { type: "text", maxlength: "50", value: c.first_name || "" });
+    const last = h("input", { type: "text", maxlength: "50", value: c.last_name || "" });
+    const age = h("input", { type: "number", min: "0", max: "17", step: "1", inputmode: "numeric", value: c.age });
+    const gender = h("select", null,
+      h("option", { value: "boy" }, "Мальчик"),
+      h("option", { value: "girl" }, "Девочка"));
+    gender.value = c.gender === "girl" ? "girl" : "boy";
+    const wishes = h("textarea", { placeholder: "Что любит, о чём мечтает" }, c.wishes || "");
+    wrap.replaceChildren(
+      h("div", { class: "field-row even" }, field("Имя", first), field("Фамилия", last)),
+      h("div", { class: "field-row even" }, field("Возраст", age), field("Пол", gender)),
+      h("div", { class: "line" }, wishes),
+      h("div", { class: "row" },
+        h("button", {
+          class: "btn small", type: "button",
+          onclick: (ev) => {
+            const body = {
+              first_name: first.value.trim(), last_name: last.value.trim(),
+              age: Number(age.value), gender: gender.value, wishes: wishes.value.trim(),
+            };
+            if (!body.first_name) return toast("Введите имя ребёнка", true);
+            if (!Number.isInteger(body.age) || body.age < 0 || body.age > 17) return toast("Укажите возраст от 0 до 17", true);
+            run(`/api/children/${c.id}/edit`, body, null, ev.currentTarget);
+          },
+        }, "Сохранить"),
+        h("button", { class: "btn small secondary", type: "button", onclick: showInfo }, "Отмена"),
+      ),
+    );
+  };
+  showInfo();
+  return wrap;
 }
 
 function renderFamilies() {
@@ -602,6 +645,33 @@ function renderFamilies() {
 }
 
 function familyCard(f) {
+  const wrap = h("div", null);
+  const showCard = () => {
+    wrap.replaceChildren(h("button", {
+      class: "btn small secondary", type: "button",
+      onclick: () => {
+        const first = h("input", { type: "text", maxlength: "50", value: f.first_name || "" });
+        const last = h("input", { type: "text", maxlength: "50", value: f.last_name || "" });
+        const phone = h("input", { type: "tel", value: f.phone || "" });
+        const pvz = h("input", { type: "text", value: f.pvz || "" });
+        wrap.replaceChildren(
+          h("div", { class: "field-row even" }, field("Имя", first), field("Фамилия", last)),
+          h("div", { class: "field-row even" }, field("Телефон", phone), field("Пункт выдачи", pvz)),
+          h("div", { class: "row" },
+            h("button", {
+              class: "btn small", type: "button",
+              onclick: (ev) => run(`/api/users/${f.id}/edit`, {
+                first_name: first.value.trim(), last_name: last.value.trim(),
+                phone: phone.value.trim(), pvz: pvz.value.trim(),
+              }, null, ev.currentTarget),
+            }, "Сохранить"),
+            h("button", { class: "btn small secondary", type: "button", onclick: showCard }, "Отмена"),
+          ),
+        );
+      },
+    }, "Изменить"));
+  };
+  showCard();
   return card(
     h("div", { class: "row" },
       h("h3", null, personLink(f)),
@@ -612,6 +682,7 @@ function familyCard(f) {
     contactLine(f),
     h("div", { class: "muted line" }, "ПВЗ: " + f.pvz),
     h("div", { class: "line" }, f.children.map(kidLine)),
+    wrap,
   );
 }
 

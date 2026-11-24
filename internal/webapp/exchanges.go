@@ -27,15 +27,19 @@ type personJSON struct {
 }
 
 type childJSON struct {
-	ID     int64  `json:"id"`
-	Name   string `json:"name"`
-	Age    int    `json:"age"`
-	Gender string `json:"gender"`
-	Wishes string `json:"wishes,omitempty"`
+	ID        int64  `json:"id"`
+	Name      string `json:"name"`
+	FirstName string `json:"first_name,omitempty"`
+	LastName  string `json:"last_name,omitempty"`
+	Age       int    `json:"age"`
+	Gender    string `json:"gender"`
+	Wishes    string `json:"wishes,omitempty"`
 }
 
 type familyJSON struct {
 	personJSON
+	FirstName  string      `json:"first_name"`
+	LastName   string      `json:"last_name"`
 	Children   []childJSON `json:"children"`
 	Gives      int         `json:"gives"`
 	Violations int         `json:"violations"`
@@ -255,7 +259,7 @@ func (s *Server) buildExchange(ctx context.Context, ex store.Exchange) (exchange
 
 	kids := map[int64][]childJSON{}
 	for _, c := range children {
-		kids[c.ParentID] = append(kids[c.ParentID], childJSON{ID: c.ID, Name: c.FirstName + " " + c.LastName, Age: c.Age, Gender: c.Gender, Wishes: c.Wishes})
+		kids[c.ParentID] = append(kids[c.ParentID], childJSON{ID: c.ID, Name: c.FirstName + " " + c.LastName, FirstName: c.FirstName, LastName: c.LastName, Age: c.Age, Gender: c.Gender, Wishes: c.Wishes})
 	}
 	gives := map[int64]int{}
 	for _, a := range assignments {
@@ -278,7 +282,7 @@ func (s *Server) buildExchange(ctx context.Context, ex store.Exchange) (exchange
 			if children == nil {
 				children = []childJSON{}
 			}
-			out.Families = append(out.Families, familyJSON{personJSON: person(u), Children: children, Gives: gives[u.ID], Violations: violationsOf[u.ID]})
+			out.Families = append(out.Families, familyJSON{personJSON: person(u), FirstName: u.FirstName, LastName: u.LastName, Children: children, Gives: gives[u.ID], Violations: violationsOf[u.ID]})
 		} else if open {
 			unfinished = append(unfinished, person(u))
 		}

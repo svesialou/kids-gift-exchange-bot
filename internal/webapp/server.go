@@ -41,6 +41,9 @@ type Admin interface {
 	DeleteExchange(ctx context.Context, id int64, notify bool) error
 	AddViolation(ctx context.Context, exchangeID, userID int64, comment string) error
 	SetViolationDismissed(ctx context.Context, id int64, dismissed bool) error
+	EditParent(ctx context.Context, userID int64, firstName, lastName, phone, pvz string) error
+	EditChild(ctx context.Context, childID int64, firstName, lastName string, age int, gender, wishes string) error
+	DeleteChild(ctx context.Context, childID int64) error
 	Texts() *texts.Service
 }
 
@@ -71,6 +74,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/users", s.auth(s.handleUsers))
 	mux.Handle("GET /api/users/{id}", s.auth(s.handleUser))
 	mux.Handle("POST /api/users/ban", s.auth(s.handleBan))
+	mux.Handle("POST /api/users/{id}/edit", s.auth(s.handleEditUser))
+	mux.Handle("POST /api/children/{id}/edit", s.auth(s.handleEditChild))
+	mux.Handle("POST /api/children/{id}/delete", s.auth(s.handleDeleteChild))
 	mux.Handle("POST /api/messages", s.auth(s.handleMessage))
 	mux.Handle("POST /api/exchanges/{id}/delete", s.auth(s.handleDeleteExchange))
 	mux.Handle("POST /api/violations", s.auth(s.handleAddViolation))

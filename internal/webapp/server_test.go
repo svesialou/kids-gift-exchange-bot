@@ -20,8 +20,24 @@ import (
 )
 
 type fakeAdmin struct {
-	actions []string
-	texts   *texts.Service
+	actions         []string
+	texts           *texts.Service
+	err             error
+	parentEdits     []parentEdit
+	childEdits      []childEdit
+	deletedChildIDs []int64
+}
+
+type parentEdit struct {
+	UserID                          int64
+	FirstName, LastName, Phone, PVZ string
+}
+
+type childEdit struct {
+	ChildID             int64
+	FirstName, LastName string
+	Age                 int
+	Gender, Wishes      string
 }
 
 func (f *fakeAdmin) ChangeExchangeStatus(_ context.Context, _ int64, action string) (domain.ExchangeStatus, error) {
@@ -43,9 +59,30 @@ func (f *fakeAdmin) SetBanned(context.Context, []int64, bool, string) (int, erro
 func (f *fakeAdmin) SendMessage(context.Context, []int64, string) (int, error)     { return 0, nil }
 func (f *fakeAdmin) DeleteExchange(context.Context, int64, bool) error             { return nil }
 func (f *fakeAdmin) AddViolation(context.Context, int64, int64, string) error      { return nil }
-func (f *fakeAdmin) SetViolationDismissed(context.Context, int64, bool) error      { return nil }
-func (f *fakeAdmin) UpdateSettings(context.Context, int64, bot.Settings) error     { return nil }
-func (f *fakeAdmin) Texts() *texts.Service                                         { return f.texts }
+func (f *fakeAdmin) EditParent(_ context.Context, userID int64, firstName, lastName, phone, pvz string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.parentEdits = append(f.parentEdits, parentEdit{UserID: userID, FirstName: firstName, LastName: lastName, Phone: phone, PVZ: pvz})
+	return nil
+}
+func (f *fakeAdmin) EditChild(_ context.Context, childID int64, firstName, lastName string, age int, gender, wishes string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.childEdits = append(f.childEdits, childEdit{ChildID: childID, FirstName: firstName, LastName: lastName, Age: age, Gender: gender, Wishes: wishes})
+	return nil
+}
+func (f *fakeAdmin) DeleteChild(_ context.Context, childID int64) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.deletedChildIDs = append(f.deletedChildIDs, childID)
+	return nil
+}
+func (f *fakeAdmin) SetViolationDismissed(context.Context, int64, bool) error  { return nil }
+func (f *fakeAdmin) UpdateSettings(context.Context, int64, bot.Settings) error { return nil }
+func (f *fakeAdmin) Texts() *texts.Service                                     { return f.texts }
 func (f *fakeAdmin) InviteLink(ex store.Exchange) string {
 	return "https://t.me/test_bot?start=" + ex.InviteCode
 }
@@ -194,5 +231,104 @@ func TestPanelAccessAndState(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != http.StatusOK || !strings.Contains(res.Header.Get("Content-Security-Policy"), "frame-ancestors") {
 		t.Fatalf("index: %d, CSP %q", res.StatusCode, res.Header.Get("Content-Security-Policy"))
+	}
+}
+
+func TestFamilyEditing(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	exID, err := st.CreateExchange(ctx, store.ExchangeSchedule{Title: "Новый год", BudgetMin: 25,
+		OrderDeadline: time.Date(2026, 12, 13, 0, 0, 0, 0, time.UTC), DeliveryDeadline: time.Date(2026, 12, 25, 0, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveUser(ctx, store.User{TgID: 1001, FirstName: "Анна", LastName: "Петрова", Phone: "+375****2233", PVZAddress: "Минск, Победителей 1"}); err != nil {
+		t.Fatal(err)
+	}
+	anna, _ := st.UserByTG(ctx, 1001)
+	if err := st.AddChild(ctx, exID, store.Child{ParentID: anna.ID, FirstName: "Маша", LastName: "Петрова", Age: 6, Gender: "girl", Wishes: "кукла"}); err != nil {
+		t.Fatal(err)
+	}
+	children, err := st.ExchangeChildren(ctx, exID)
+	if err != nil || len(children) != 1 {
+		t.Fatalf("children: %d %v", len(children), err)
+	}
+	childID := children[0].ID
+
+	cfg := config.Config{Location: time.UTC, TelegramToken: testToken, AdminIDs: []int64{42}, StuckAfter: 96 * time.Hour}
+	admin := &fakeAdmin{texts: texts.New(st)}
+	srv := httptest.NewServer(New(cfg, st, admin).Handler())
+	defer srv.Close()
+
+	initData := func() string {
+		return signInitData(t, testToken, map[string]string{
+			"auth_date": strconv.FormatInt(time.Now().Unix(), 10),
+			"user":      `{"id":42}`,
+		})
+	}
+	do := func(method, path, body string) (int, map[string]any) {
+		req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
+		req.Header.Set("Authorization", "tma "+initData())
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		var out map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&out)
+		return res.StatusCode, out
+	}
+
+	code, body := do("POST", fmt.Sprintf("/api/users/%d/edit", anna.ID),
+		`{"first_name":"Анна","last_name":"Смирнова","phone":"+375 29 111-22-33","pvz":"Минск, Немига 5"}`)
+	if code != http.StatusOK || body["message"] != "Изменения сохранены." {
+		t.Fatalf("parent edit: want 200, got %d %v", code, body)
+	}
+	want := parentEdit{UserID: anna.ID, FirstName: "Анна", LastName: "Смирнова", Phone: "+375 29 111-22-33", PVZ: "Минск, Немига 5"}
+	if len(admin.parentEdits) != 1 || admin.parentEdits[0] != want {
+		t.Fatalf("parent edit not passed to the bot: %v", admin.parentEdits)
+	}
+
+	code, body = do("POST", fmt.Sprintf("/api/children/%d/edit", childID),
+		`{"first_name":"Маша","last_name":"Смирнова","age":7,"gender":"girl","wishes":"ролики"}`)
+	if code != http.StatusOK || body["message"] != "Изменения сохранены." {
+		t.Fatalf("child edit: want 200, got %d %v", code, body)
+	}
+	wantChild := childEdit{ChildID: childID, FirstName: "Маша", LastName: "Смирнова", Age: 7, Gender: "girl", Wishes: "ролики"}
+	if len(admin.childEdits) != 1 || admin.childEdits[0] != wantChild {
+		t.Fatalf("child edit not passed to the bot: %v", admin.childEdits)
+	}
+
+	code, body = do("POST", fmt.Sprintf("/api/children/%d/delete", childID), "")
+	if code != http.StatusOK || body["message"] != "Ребёнок удалён." {
+		t.Fatalf("child delete: want 200, got %d %v", code, body)
+	}
+	if len(admin.deletedChildIDs) != 1 || admin.deletedChildIDs[0] != childID {
+		t.Fatalf("child delete not passed to the bot: %v", admin.deletedChildIDs)
+	}
+
+	code, state := do("GET", fmt.Sprintf("/api/exchanges/%d", exID), "")
+	families := state["families"].([]any)
+	fam := families[0].(map[string]any)
+	kid := fam["children"].([]any)[0].(map[string]any)
+	if code != http.StatusOK || fam["first_name"] != "Анна" || fam["last_name"] != "Петрова" || kid["last_name"] != "Петрова" {
+		t.Fatalf("family view must carry split names: %d %v", code, fam)
+	}
+
+	admin.err = &bot.ActionError{Msg: "Нельзя удалить: подарок уже едет."}
+	code, body = do("POST", fmt.Sprintf("/api/children/%d/edit", childID), `{"first_name":"Маша","last_name":"Петрова","age":6,"gender":"girl"}`)
+	if code != http.StatusConflict || body["error"] != "Нельзя удалить: подарок уже едет." {
+		t.Fatalf("refusal must reach the admin as 409: %d %v", code, body)
+	}
+	admin.err = nil
+
+	if code, _ := do("POST", "/api/users/0/edit", `{"first_name":"x"}`); code != http.StatusBadRequest {
+		t.Fatalf("bad user id: want 400, got %d", code)
+	}
+	if code, _ := do("POST", "/api/children/notanumber/edit", `{}`); code != http.StatusBadRequest {
+		t.Fatalf("non-numeric child id: want 400, got %d", code)
+	}
+	if code, _ := do("POST", fmt.Sprintf("/api/users/%d/edit", anna.ID), `{"first_name":`); code != http.StatusBadRequest {
+		t.Fatalf("malformed body: want 400, got %d", code)
 	}
 }

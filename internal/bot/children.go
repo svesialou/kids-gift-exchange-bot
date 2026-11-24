@@ -102,7 +102,7 @@ func (b *Bot) handleChildStep(ctx context.Context, msg *tgbotapi.Message, sess s
 
 	case stateChildAge:
 		age, err := strconv.Atoi(text)
-		if err != nil || age < 0 || age > 17 {
+		if err != nil || !validAge(age) {
 			b.send(tgID, b.tx("children.bad_age"), nil)
 			return nil
 		}
@@ -128,13 +128,36 @@ func (b *Bot) handleChildStep(ctx context.Context, msg *tgbotapi.Message, sess s
 		if text == b.label("btn.skip") {
 			wishes = ""
 		}
-		if utf8.RuneCountInString(wishes) > 1000 {
+		if !validWishes(wishes) {
 			b.send(tgID, b.tx("children.long_wishes"), nil)
 			return nil
 		}
 		return b.saveChild(ctx, tgID, sess, wishes)
 	}
 	return b.store.SaveSession(ctx, tgID, sess)
+}
+
+func validAge(age int) bool { return age >= 0 && age <= 17 }
+
+func validGender(g string) bool { return g == "boy" || g == "girl" }
+
+func validWishes(w string) bool { return utf8.RuneCountInString(w) <= 1000 }
+
+// validateChild applies the child registration rules to the admin panel edits.
+func validateChild(firstName, lastName string, age int, gender, wishes string) error {
+	switch {
+	case !validName(firstName):
+		return refuse("Имя ребёнка: от 1 до 100 символов.")
+	case !validName(lastName):
+		return refuse("Фамилия ребёнка: от 1 до 100 символов.")
+	case !validAge(age):
+		return refuse("Возраст: от 0 до 17.")
+	case !validGender(gender):
+		return refuse("Пол: мальчик или девочка.")
+	case !validWishes(wishes):
+		return refuse("Пожелания: до 1000 символов.")
+	}
+	return nil
 }
 
 func (b *Bot) saveChild(ctx context.Context, tgID int64, sess store.Session, wishes string) error {

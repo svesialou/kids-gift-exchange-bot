@@ -132,6 +132,98 @@ func (b *Bot) SetBanned(ctx context.Context, userIDs []int64, banned bool, reaso
 	return changed, nil
 }
 
+// EditParent updates a family's contact details from the admin panel.
+func (b *Bot) EditParent(ctx context.Context, userID int64, firstName, lastName, phone, pvz string) error {
+	firstName, lastName = strings.TrimSpace(firstName), strings.TrimSpace(lastName)
+	phone, pvz = strings.TrimSpace(phone), strings.TrimSpace(pvz)
+	switch {
+	case !validName(firstName):
+		return refuse("Имя: от 1 до 100 символов.")
+	case !validName(lastName):
+		return refuse("Фамилия: от 1 до 100 символов.")
+	}
+	if err := validateParentContact(phone, pvz); err != nil {
+		return err
+	}
+	old, err := b.store.UserByID(ctx, userID)
+	if errors.Is(err, store.ErrNotFound) {
+		return refuse("Семья не найдена.")
+	}
+	if err != nil {
+		return err
+	}
+	ex, err := b.store.ActiveExchange(ctx)
+	if err != nil {
+		return err
+	}
+	ok, err := b.store.UpdateUser(ctx, userID, store.User{FirstName: firstName, LastName: lastName, Phone: phone, PVZAddress: pvz})
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return refuse("Семья не найдена.")
+	}
+	if old.PVZAddress != pvz {
+		b.notifyGiversAboutAddress(ctx, ex, userID, pvz)
+	}
+	return nil
+}
+
+// EditChild updates a child's profile from the admin panel.
+func (b *Bot) EditChild(ctx context.Context, childID int64, firstName, lastName string, age int, gender, wishes string) error {
+	firstName, lastName = strings.TrimSpace(firstName), strings.TrimSpace(lastName)
+	gender, wishes = strings.TrimSpace(gender), strings.TrimSpace(wishes)
+	if err := validateChild(firstName, lastName, age, gender, wishes); err != nil {
+		return err
+	}
+	ok, err := b.store.UpdateChild(ctx, childID, store.Child{
+		FirstName: firstName,
+		LastName:  lastName,
+		Age:       age,
+		Gender:    gender,
+		Wishes:    wishes,
+	})
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return refuse("Ребёнок не найден.")
+	}
+	return nil
+}
+
+// DeleteChild hides a child unless a gift has already been assigned to them.
+func (b *Bot) DeleteChild(ctx context.Context, childID int64) error {
+	if _, err := b.store.ChildByID(ctx, childID); errors.Is(err, store.ErrNotFound) {
+		return refuse("Ребёнок не найден.")
+	} else if err != nil {
+		return err
+	}
+	assigned, err := b.store.ChildHasAssignment(ctx, childID)
+	if err != nil {
+		return err
+	}
+	if assigned {
+		return refuse("Подарок для этого ребёнка уже распределён — удалить нельзя.")
+	}
+	ok, err := b.store.SoftDeleteChild(ctx, childID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		// The atomic UPDATE lost to a concurrent Distribute; re-check to pick the right refusal.
+		assigned, err := b.store.ChildHasAssignment(ctx, childID)
+		if err != nil {
+			return err
+		}
+		if assigned {
+			return refuse("Подарок для этого ребёнка уже распределён — удалить нельзя.")
+		}
+		return refuse("Ребёнок не найден.")
+	}
+	return nil
+}
+
 // SendMessage delivers an organizer's message to the chosen users from the bot.
 func (b *Bot) SendMessage(ctx context.Context, userIDs []int64, text string) (int, error) {
 	text = strings.TrimSpace(text)

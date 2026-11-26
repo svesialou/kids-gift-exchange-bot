@@ -12,6 +12,63 @@ import (
 	"github.com/svesialou/kids-gift-exchange-bot/internal/store/storetest"
 )
 
+func TestOrganizerMessagesAreRecordedInHistory(t *testing.T) {
+	st := storetest.New(t)
+	ctx := context.Background()
+	api, tg := newFakeTelegram(t)
+	b := New(api, st, config.Config{Location: time.UTC, AdminIDs: []int64{900}})
+
+	for tgID := int64(100); tgID <= 101; tgID++ {
+		if err := st.SaveUser(ctx, store.User{TgID: tgID, FirstName: "P", LastName: "L", Phone: "+375291234567", PVZAddress: "Минск"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := st.UserByTG(ctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := st.UserByTG(ctx, 101)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if n, err := b.SendMessage(ctx, []int64{first.ID}, "Привет"); err != nil || n != 1 {
+		t.Fatalf("SendMessage = %d %v, want 1 nil", n, err)
+	}
+	if n, err := b.Broadcast(ctx, "Всем привет"); err != nil || n != 2 {
+		t.Fatalf("Broadcast = %d %v, want 2 nil", n, err)
+	}
+
+	want := []store.SentMessage{
+		{UserID: first.ID, Kind: "broadcast", Text: b.tx("org.broadcast", "text", "Всем привет")},
+		{UserID: first.ID, Kind: "org", Text: b.tx("org.message", "text", "Привет")},
+	}
+	got, err := st.SentMessagesOfUser(ctx, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("SentMessagesOfUser = %+v, want %+v", got, want)
+	}
+	for i, w := range want {
+		if got[i].ID == 0 || got[i].CreatedAt.IsZero() {
+			t.Fatalf("record %d must have id and timestamp, got %+v", i, got[i])
+		}
+		got[i].ID, got[i].CreatedAt = 0, time.Time{}
+		if got[i] != w {
+			t.Fatalf("record %d = %+v, want %+v", i, got[i], w)
+		}
+	}
+
+	got, err = st.SentMessagesOfUser(ctx, second.ID)
+	if err != nil || len(got) != 1 || got[0].Kind != "broadcast" || got[0].Text != want[0].Text {
+		t.Fatalf("broadcast must be recorded for every user, got %+v %v", got, err)
+	}
+	if !strings.Contains(tg.textsTo("101"), "Всем привет") {
+		t.Fatalf("broadcast must still reach every chat: %q", tg.textsTo("101"))
+	}
+}
+
 func TestDeleteExchangeMessagesAndBans(t *testing.T) {
 	st := storetest.New(t)
 	ctx := context.Background()

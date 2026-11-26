@@ -108,17 +108,34 @@ func (b *Bot) handleChildStep(ctx context.Context, msg *tgbotapi.Message, sess s
 		}
 		sess.Data["age"] = text
 		sess.State = stateChildGender
+		if age >= 18 {
+			b.send(tgID, b.tx("children.ask_gender_adult"), b.stepKeyboard(b.label("btn.male"), b.label("btn.female")))
+			return b.store.SaveSession(ctx, tgID, sess)
+		}
 		b.send(tgID, b.tx("children.ask_gender"), b.stepKeyboard(b.label("btn.boy"), b.label("btn.girl")))
 
 	case stateChildGender:
-		switch text {
-		case b.label("btn.boy"):
-			sess.Data["gender"] = "boy"
-		case b.label("btn.girl"):
-			sess.Data["gender"] = "girl"
-		default:
-			b.send(tgID, b.tx("children.bad_gender"), nil)
-			return nil
+		age, _ := strconv.Atoi(sess.Data["age"])
+		if age >= 18 {
+			switch text {
+			case b.label("btn.male"):
+				sess.Data["gender"] = "male"
+			case b.label("btn.female"):
+				sess.Data["gender"] = "female"
+			default:
+				b.send(tgID, b.tx("children.bad_gender"), nil)
+				return nil
+			}
+		} else {
+			switch text {
+			case b.label("btn.boy"):
+				sess.Data["gender"] = "boy"
+			case b.label("btn.girl"):
+				sess.Data["gender"] = "girl"
+			default:
+				b.send(tgID, b.tx("children.bad_gender"), nil)
+				return nil
+			}
 		}
 		sess.State = stateChildWishes
 		b.send(tgID, b.tx("children.ask_wishes"), b.stepKeyboard(b.label("btn.skip")))
@@ -137,9 +154,9 @@ func (b *Bot) handleChildStep(ctx context.Context, msg *tgbotapi.Message, sess s
 	return b.store.SaveSession(ctx, tgID, sess)
 }
 
-func validAge(age int) bool { return age >= 0 && age <= 17 }
+func validAge(age int) bool { return age >= 0 && age <= 99 }
 
-func validGender(g string) bool { return g == "boy" || g == "girl" }
+func validGender(g string) bool { return g == "boy" || g == "girl" || g == "male" || g == "female" }
 
 func validWishes(w string) bool { return utf8.RuneCountInString(w) <= 1000 }
 
@@ -147,13 +164,13 @@ func validWishes(w string) bool { return utf8.RuneCountInString(w) <= 1000 }
 func validateChild(firstName, lastName string, age int, gender, wishes string) error {
 	switch {
 	case !validName(firstName):
-		return refuse("Имя ребёнка: от 1 до 100 символов.")
+		return refuse("Имя участника: от 1 до 100 символов.")
 	case !validName(lastName):
-		return refuse("Фамилия ребёнка: от 1 до 100 символов.")
+		return refuse("Фамилия участника: от 1 до 100 символов.")
 	case !validAge(age):
-		return refuse("Возраст: от 0 до 17.")
+		return refuse("Возраст: от 0 до 99.")
 	case !validGender(gender):
-		return refuse("Пол: мальчик или девочка.")
+		return refuse("Пол: мальчик, девочка, мужчина или женщина.")
 	case !validWishes(wishes):
 		return refuse("Пожелания: до 1000 символов.")
 	}

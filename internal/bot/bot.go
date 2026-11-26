@@ -362,8 +362,13 @@ func ageText(age int) string {
 }
 
 func genderText(g string) string {
-	if g == "girl" {
+	switch g {
+	case "girl":
 		return "девочка"
+	case "female":
+		return "женщина"
+	case "male":
+		return "мужчина"
 	}
 	return "мальчик"
 }

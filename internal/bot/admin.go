@@ -30,7 +30,7 @@ var statusTitles = map[domain.ExchangeStatus]string{
 	domain.ExchangeDraft:       "черновик",
 	domain.ExchangeOpen:        "регистрация открыта",
 	domain.ExchangeClosed:      "регистрация закрыта",
-	domain.ExchangeDistributed: "дети распределены",
+	domain.ExchangeDistributed: "участники распределены",
 	domain.ExchangeCompleted:   "обмен завершён",
 }
 
@@ -187,7 +187,7 @@ func (b *Bot) EditChild(ctx context.Context, childID int64, firstName, lastName 
 		return err
 	}
 	if !ok {
-		return refuse("Ребёнок не найден.")
+		return refuse("Участник не найден.")
 	}
 	return nil
 }
@@ -195,7 +195,7 @@ func (b *Bot) EditChild(ctx context.Context, childID int64, firstName, lastName 
 // DeleteChild hides a child unless a gift has already been assigned to them.
 func (b *Bot) DeleteChild(ctx context.Context, childID int64) error {
 	if _, err := b.store.ChildByID(ctx, childID); errors.Is(err, store.ErrNotFound) {
-		return refuse("Ребёнок не найден.")
+		return refuse("Участник не найден.")
 	} else if err != nil {
 		return err
 	}
@@ -204,7 +204,7 @@ func (b *Bot) DeleteChild(ctx context.Context, childID int64) error {
 		return err
 	}
 	if assigned {
-		return refuse("Подарок для этого ребёнка уже распределён — удалить нельзя.")
+		return refuse("Подарок для этого участника уже распределён — удалить нельзя.")
 	}
 	ok, err := b.store.SoftDeleteChild(ctx, childID)
 	if err != nil {
@@ -217,9 +217,9 @@ func (b *Bot) DeleteChild(ctx context.Context, childID int64) error {
 			return err
 		}
 		if assigned {
-			return refuse("Подарок для этого ребёнка уже распределён — удалить нельзя.")
+			return refuse("Подарок для этого участника уже распределён — удалить нельзя.")
 		}
-		return refuse("Ребёнок не найден.")
+		return refuse("Участник не найден.")
 	}
 	return nil
 }
@@ -332,7 +332,7 @@ func (b *Bot) PreviewDistribution(ctx context.Context, id int64) (DistributionPr
 		p.Possible, p.Reason = false, fmt.Sprintf("Распределять можно только после закрытия регистрации, сейчас «%s».", StatusTitle(ex.Status))
 	default:
 		if _, err := domain.Distribute(refs, rand.New(rand.NewSource(1))); err != nil {
-			p.Possible, p.Reason = false, "Нужно минимум две семьи, и ни одна семья не может привести больше половины всех детей."
+			p.Possible, p.Reason = false, "Нужно минимум две семьи, и ни одна семья не может привести больше половины всех участников."
 		}
 	}
 	return p, nil
@@ -422,17 +422,17 @@ func (b *Bot) Reassign(ctx context.Context, childID, giverID int64) error {
 		}
 	}
 	if old == nil {
-		return refuse("Ребёнок %d не найден в распределении.", childID)
+		return refuse("Участник %d не найден в распределении.", childID)
 	}
 	if old.Giver.ID == giverID {
-		return refuse("Этот участник уже дарит подарок этому ребёнку.")
+		return refuse("Этот участник уже дарит подарок этому участнику.")
 	}
 	ok, err := b.store.Reassign(ctx, ex.ID, childID, giverID)
 	if err != nil {
 		return err
 	}
 	if !ok {
-		return refuse("Нельзя: подарок уже получен или новый даритель — родитель этого ребёнка.")
+		return refuse("Нельзя: подарок уже получен или новый даритель — из семьи получателя.")
 	}
 	updated, err := b.store.Assignment(ctx, old.ID)
 	if err != nil {
@@ -476,7 +476,7 @@ const adminHelp = `<b>Организатору</b>
 /families — участники и телефоны
 /status — прогресс по подаркам
 /remind — разослать напоминания сейчас
-/reassign &lt;child_id&gt; &lt;user_id&gt; — передать ребёнка другому дарителю
+/reassign &lt;child_id&gt; &lt;user_id&gt; — передать участника другому дарителю
 /broadcast &lt;текст&gt; — сообщение всем участникам`
 
 func (b *Bot) handleAdminCommand(ctx context.Context, msg *tgbotapi.Message, cmd, args string) (bool, error) {
@@ -538,10 +538,10 @@ func (b *Bot) adminFamilies(ctx context.Context, tgID int64) error {
 	total := 0
 	for _, p := range list {
 		total += p.Children
-		fmt.Fprintf(&sb, "[user %d] %s %s%s, %s\nПВЗ: %s\nДетей: %d\n\n",
+		fmt.Fprintf(&sb, "[user %d] %s %s%s, %s\nПВЗ: %s\nУчастников: %d\n\n",
 			p.ID, esc(p.LastName), esc(p.FirstName), usernameSuffix(p.User), esc(p.Phone), esc(p.PVZAddress), p.Children)
 	}
-	header := fmt.Sprintf("<b>Обмен #%d: %s</b>\nСемей: %d, детей: %d\n\n", ex.ID, StatusTitle(ex.Status), len(list), total)
+	header := fmt.Sprintf("<b>Обмен #%d: %s</b>\nСемей: %d, участников: %d\n\n", ex.ID, StatusTitle(ex.Status), len(list), total)
 	b.send(tgID, header+sb.String(), nil)
 	return nil
 }
@@ -573,9 +573,9 @@ func (b *Bot) notifyDistribution(list []store.Assignment) {
 func childrenWord(n int) string {
 	mod10, mod100 := n%10, n%100
 	if mod10 == 1 && mod100 != 11 {
-		return "ребёнку"
+		return "участнику"
 	}
-	return "детям"
+	return "участникам"
 }
 
 func (b *Bot) adminStatus(ctx context.Context, tgID int64) error {

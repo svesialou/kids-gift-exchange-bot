@@ -121,7 +121,7 @@ func TestEditChildUpdatesChild(t *testing.T) {
 		age                 int
 		gender, wishes      string
 	}{
-		{"age out of range", "Маша", "Иванова", 20, "girl", "кукла"},
+		{"age out of range", "Маша", "Иванова", 100, "girl", "кукла"},
 		{"bad gender", "Маша", "Иванова", 7, "alien", "кукла"},
 		{"empty first name", "", "Иванова", 7, "girl", "кукла"},
 	} {
@@ -221,13 +221,13 @@ func TestDeleteChildBlockedWhenAssigned(t *testing.T) {
 	}
 
 	var actionErr *ActionError
-	if err := b.DeleteChild(ctx, kids[0].ID); !errors.As(err, &actionErr) || actionErr.Msg != "Подарок для этого ребёнка уже распределён — удалить нельзя." {
+	if err := b.DeleteChild(ctx, kids[0].ID); !errors.As(err, &actionErr) || actionErr.Msg != "Подарок для этого участника уже распределён — удалить нельзя." {
 		t.Fatalf("assigned child must be refused with the assignment message, got %v", err)
 	}
 	if got, getErr := st.ChildByID(ctx, kids[0].ID); getErr != nil || got.ID != kids[0].ID {
 		t.Fatalf("assigned child must stay, got %+v %v", got, getErr)
 	}
-	if err := b.DeleteChild(ctx, kids[0].ID+1000); !errors.As(err, &actionErr) || actionErr.Msg != "Ребёнок не найден." {
+	if err := b.DeleteChild(ctx, kids[0].ID+1000); !errors.As(err, &actionErr) || actionErr.Msg != "Участник не найден." {
 		t.Fatalf("unknown child must be refused with the missing message, got %v", err)
 	}
 }

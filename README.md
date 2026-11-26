@@ -1,13 +1,13 @@
 # kids-gift-exchange-bot
 
-Telegram bot for a gift exchange between families with kids. One adult per family registers with a Wildberries pickup point (ПВЗ), adds their children, and after registration closes the bot assigns every child a giver from another family. Gifts are ordered on Wildberries to the recipient's ПВЗ, and the bot relays the one-day pickup code from giver to recipient.
+Telegram bot for a gift exchange between families with kids and adults. One adult per family registers with a Wildberries pickup point (ПВЗ), adds their participants — the children of the family and the adults who want to take part — and after registration closes the bot assigns every participant a giver from another family. Gifts are ordered on Wildberries to the recipient's ПВЗ, and the bot relays the one-day pickup code from giver to recipient.
 
 ## Flow
 
 1. Organizer runs `/open` and shares the `/invite` link. Every exchange has its own invite code, so a link only starts registration into that exchange.
-2. Parents register: first name, last name, phone, ПВЗ address. Then they add children: first name, last name, age, gender, optional wishes.
+2. Parents register: first name, last name, phone, ПВЗ address. Then they add participants — children and adults of the family: first name, last name, age, gender, optional wishes.
 3. Organizer runs `/close`, checks `/families`, then `/distribute` and confirms. Distribution happens once and cannot be repeated.
-4. Each family gives as many gifts as it brought children and never gets its own children. The rule fails only if one family brings more than half of all children.
+4. Each family gives as many gifts as it brought participants and never gets its own participants. The rule fails only if one family brings more than half of all participants.
 5. Giver: «Заказал(а)» with expected date, then «Пришло в ПВЗ», then sends the pickup code (text or QR screenshot) when the recipient asks.
 6. Recipient: «Иду забирать» asks the giver for today's code, «Код не подошёл» asks for a new one, «Забрал(а)» closes the gift.
 7. Organizer runs `/finish` when everything is received.
@@ -34,11 +34,11 @@ Organizers create every exchange by hand in the panel and fill all of its fields
 
 - Several exchanges can be planned; only one runs at a time (registration open, closed, or gifts distributed). Every exchange has its own invite code and link: parents join a specific planned exchange through its link, and any other start payload is refused.
 - Registration opens only when an organizer presses the button, and only between the exchange's registration start and end, while no other exchange is running.
-- At the registration end the bot closes it and distributes the children right away.
+- At the registration end the bot closes it and distributes the participants right away.
 - After the end of the send-by day givers who have not marked «Заказал(а)» get an `order_overdue` violation.
 - After the end date the exchange completes, reminders stop, and gifts that never reached the pickup point get a `delivery_overdue` violation.
 
-Any exchange can be deleted together with its children, distribution and violations; for a running one organizers can notify its participants. Adult profiles carry over between exchanges; children are registered per exchange. While no exchange runs, the bot tells newcomers that registration is closed.
+Any exchange can be deleted together with its participants, distribution and violations; for a running one organizers can notify its participants. Adult profiles carry over between exchanges; participants are registered per exchange. While no exchange runs, the bot tells newcomers that registration is closed.
 
 ## Admin panel
 

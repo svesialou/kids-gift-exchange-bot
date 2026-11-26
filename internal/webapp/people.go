@@ -149,7 +149,7 @@ func (s *Server) handleBan(w http.ResponseWriter, r *http.Request) {
 	n, err := s.admin.SetBanned(r.Context(), req.UserIDs, req.Banned, req.Reason)
 	msg := "Разблокировано: " + strconv.Itoa(n) + "."
 	if req.Banned {
-		msg = "Заблокировано: " + strconv.Itoa(n) + ". Они не смогут добавлять детей и не попадут в распределение."
+		msg = "Заблокировано: " + strconv.Itoa(n) + ". Они не смогут добавлять участников и не попадут в распределение."
 	}
 	s.reply(w, msg, err)
 }
@@ -194,7 +194,7 @@ func (s *Server) handleDeleteChild(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.reply(w, "Ребёнок удалён.", s.admin.DeleteChild(r.Context(), id))
+	s.reply(w, "Участник удалён.", s.admin.DeleteChild(r.Context(), id))
 }
 
 func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {

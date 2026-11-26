@@ -291,7 +291,7 @@ function exchangeRow(x) {
     h("div", { class: "muted" }, `Регистрация ${fmtLocal(s.registration_opens_at)} – ${fmtLocal(s.registration_closes_at)}`),
     h("div", { class: "muted" }, `Отправить до ${fmtDate(s.order_deadline)} · завершение ${fmtDate(s.delivery_by)} · от ${s.budget_min} BYN`),
     x.families || x.gifts || x.violations ? h("div", { class: "row line" },
-      h("span", null, `${x.families} семей · ${x.children} детей`),
+      h("span", null, `${x.families} семей · ${x.children} участников`),
       x.gifts ? h("span", { class: "muted" }, `получено ${x.received}/${x.gifts}`) : null,
       x.violations ? h("span", { class: "badge flag" }, "🚩 " + x.violations) : null,
     ) : null,
@@ -331,11 +331,11 @@ function renderOverview() {
   if (ex.status !== "draft") {
     out.push(card(
       h("div", { class: "stats" },
-        statBox(d.families.length, "семей"), statBox(kids, "детей"),
+        statBox(d.families.length, "семей"), statBox(kids, "участников"),
         statBox(d.assignments.filter((a) => a.status === "received").length + " / " + d.assignments.length, "подарков получено"),
         statBox(d.violations.filter((v) => !v.dismissed).length, "нарушений"),
       ),
-      d.without_children.length ? h("div", { class: "muted line" }, "Зарегистрировались без детей: " + d.without_children.length) : null,
+      d.without_children.length ? h("div", { class: "muted line" }, "Зарегистрировались без участников: " + d.without_children.length) : null,
     ));
   }
   if (ex.status === "registration_open") out.push(inviteCard());
@@ -351,14 +351,14 @@ function deleteCard(d) {
   const kids = d.families.reduce((n, f) => n + f.children.length, 0);
   return card(
     h("h3", null, "Удалить обмен"),
-    h("div", { class: "muted" }, "Удалятся все дети, распределение и нарушения этого обмена. Профили взрослых останутся."),
+    h("div", { class: "muted" }, "Удалятся все участники, распределение и нарушения этого обмена. Профили взрослых останутся."),
     ex.active ? h("label", { class: "check line" }, notify, " Сообщить участникам, что обмен отменён") : null,
     h("button", {
       class: "btn danger", type: "button",
       onclick: async (ev) => {
         // currentTarget is reset once the click handler yields, so take the button before awaiting the dialog.
         const btn = ev.currentTarget;
-        const text = `Удалить «${ex.settings.title}»? Семей: ${d.families.length}, детей: ${kids}, подарков: ${d.assignments.length}. Восстановить будет нельзя.`;
+        const text = `Удалить «${ex.settings.title}»? Семей: ${d.families.length}, участников: ${kids}, подарков: ${d.assignments.length}. Восстановить будет нельзя.`;
         if (!(await confirmAction(text))) return;
         btn.disabled = true;
         try {
@@ -410,20 +410,20 @@ function stageCard(d) {
     case "registration_open":
       return card(
         h("h3", null, "Идёт регистрация"),
-        h("div", { class: "muted" }, `Закроется ${fmtLocal(s.registration_closes_at)}, сразу после этого бот распределит детей и разошлёт карточки.`),
+        h("div", { class: "muted" }, `Закроется ${fmtLocal(s.registration_closes_at)}, сразу после этого бот распределит участников и разошлёт карточки.`),
         h("button", { class: "btn secondary", type: "button", onclick: action("close", "Закрыть регистрацию сейчас? Новые участники не смогут присоединиться.") }, "Закрыть сейчас"),
       );
     case "registration_closed":
       return card(
         h("h3", null, "Регистрация закрыта"),
-        h("div", null, `Семей: ${p.families}, детей: ${p.children}.`),
+        h("div", null, `Семей: ${p.families}, участников: ${p.children}.`),
         p.possible
           ? h("div", { class: "muted line" }, "Распределение делается один раз, всем участникам придут карточки.")
           : h("div", { class: "line danger-text" }, p.reason),
         h("button", {
           class: "btn", type: "button", disabled: !p.possible,
-          onclick: action("distribute", "Распределить детей? Отменить будет нельзя, участникам сразу придут карточки."),
-        }, "Распределить детей"),
+          onclick: action("distribute", "Распределить участников? Отменить будет нельзя, участникам сразу придут карточки."),
+        }, "Распределить участников"),
         openButton(d, "Открыть регистрацию снова", true),
       );
     case "distributed": {
@@ -452,10 +452,10 @@ function stageCard(d) {
 
 function inviteText(s) {
   return [
-    `Приглашаем детей в обмен подарками «${s.title}» 🎁`,
-    `Каждая семья дарит подарки детям из других семей: бот подскажет, кому и на какой ПВЗ Wildberries заказать. Бюджет подарка от ${s.budget_min} BYN.`,
+    `Приглашаем в обмен подарками «${s.title}» 🎁`,
+    `Каждая семья дарит подарки участникам из других семей: бот подскажет, кому и на какой ПВЗ Wildberries заказать. Бюджет подарка от ${s.budget_min} BYN.`,
     "Регистрация до " + fmtLocal(s.registration_closes_at) + ".",
-    "Отправить подарок нужно до " + fmtDate(s.order_deadline) + ", все подарки дети получат до " + fmtDate(s.delivery_by) + ".",
+    "Отправить подарок нужно до " + fmtDate(s.order_deadline) + ", все подарки участники получат до " + fmtDate(s.delivery_by) + ".",
     "Чтобы участвовать, откройте бота по ссылке и зарегистрируйтесь:",
   ].join("\n");
 }
@@ -537,7 +537,7 @@ function settingsForm(ex) {
     h("div", { class: "field-row even" }, field("Регистрация с", opens), field("Регистрация до", closes)),
     h("div", { class: "muted" }, regLocked
       ? "Регистрация уже прошла, её даты не меняются."
-      : "Регистрацию открываете вы кнопкой в эти даты. В конце регистрации бот сам её закроет и распределит детей."),
+      : "Регистрацию открываете вы кнопкой в эти даты. В конце регистрации бот сам её закроет и распределит участников."),
     h("div", { class: "field-row even" }, field("Отправить подарки до", order), field("Завершение обмена", delivery)),
     h("div", { class: "muted" }, "После срока отправки бот запишет в нарушения тех, кто не отправил подарок. После дня завершения обмен закроется, недоставленные подарки тоже попадут в нарушения."),
     ex && ex.status === "distributed"
@@ -580,14 +580,14 @@ function kidLine(c) {
   const wrap = h("div", { class: "kid" });
   const showInfo = () => {
     wrap.replaceChildren(
-      h("div", null, `${c.name}, ${ageText(c.age)}, ${c.gender === "girl" ? "девочка" : "мальчик"}`),
+      h("div", null, `${c.name}, ${ageText(c.age)}, ${c.gender === "girl" ? "девочка" : c.gender === "female" ? "женщина" : c.gender === "male" ? "мужчина" : "мальчик"}`),
       c.wishes ? h("div", { class: "muted" }, "Пожелания: " + c.wishes) : null,
       h("div", { class: "row line" },
         h("button", { class: "btn small secondary", type: "button", onclick: showForm }, "Изменить"),
         h("button", {
           class: "btn small danger", type: "button",
           onclick: (ev) => run(`/api/children/${c.id}/delete`, {},
-            `Удалить ребёнка ${c.name}? Он выпадет из обмена.`, ev.currentTarget),
+            `Удалить участника ${c.name}? Участник выпадет из обмена.`, ev.currentTarget),
         }, "Удалить"),
       ),
     );
@@ -595,11 +595,13 @@ function kidLine(c) {
   const showForm = () => {
     const first = h("input", { type: "text", maxlength: "50", value: c.first_name || "" });
     const last = h("input", { type: "text", maxlength: "50", value: c.last_name || "" });
-    const age = h("input", { type: "number", min: "0", max: "17", step: "1", inputmode: "numeric", value: c.age });
+    const age = h("input", { type: "number", min: "0", max: "99", step: "1", inputmode: "numeric", value: c.age });
     const gender = h("select", null,
       h("option", { value: "boy" }, "Мальчик"),
-      h("option", { value: "girl" }, "Девочка"));
-    gender.value = c.gender === "girl" ? "girl" : "boy";
+      h("option", { value: "girl" }, "Девочка"),
+      h("option", { value: "male" }, "Мужчина"),
+      h("option", { value: "female" }, "Женщина"));
+    gender.value = ["boy", "girl", "male", "female"].includes(c.gender) ? c.gender : "boy";
     const wishes = h("textarea", { placeholder: "Что любит, о чём мечтает" }, c.wishes || "");
     wrap.replaceChildren(
       h("div", { class: "field-row even" }, field("Имя", first), field("Фамилия", last)),
@@ -613,8 +615,8 @@ function kidLine(c) {
               first_name: first.value.trim(), last_name: last.value.trim(),
               age: Number(age.value), gender: gender.value, wishes: wishes.value.trim(),
             };
-            if (!body.first_name) return toast("Введите имя ребёнка", true);
-            if (!Number.isInteger(body.age) || body.age < 0 || body.age > 17) return toast("Укажите возраст от 0 до 17", true);
+            if (!body.first_name) return toast("Введите имя участника", true);
+            if (!Number.isInteger(body.age) || body.age < 0 || body.age > 99) return toast("Укажите возраст от 0 до 99", true);
             run(`/api/children/${c.id}/edit`, body, null, ev.currentTarget);
           },
         }, "Сохранить"),
@@ -634,10 +636,10 @@ function renderFamilies() {
     list.replaceChildren(...(items.length ? items.map(familyCard) : [empty(ui.query ? "Никого не нашли" : "Пока никто не зарегистрировался")]));
   };
   fill();
-  const out = [searchBox("Поиск по имени, телефону, ребёнку", fill), list];
+  const out = [searchBox("Поиск по имени, телефону, участнику", fill), list];
   if (d.without_children && d.without_children.length) {
     out.push(card(
-      h("h3", null, "Зарегистрировались, но не добавили детей"),
+      h("h3", null, "Зарегистрировались, но не добавили участников"),
       d.without_children.map((p) => h("div", { class: "kid" }, personLink(p), contactLine(p))),
     ));
   }
@@ -876,7 +878,7 @@ function bulkCard() {
           if (!need()) return;
           if (!reason.value.trim()) return toast("Укажите причину блокировки", true);
           run("/api/users/ban", { user_ids: ids, banned: true, reason: reason.value.trim() },
-            `Заблокировать ${ids.length}? Они не смогут добавлять детей и не попадут в распределение.`, ev.currentTarget);
+            `Заблокировать ${ids.length}? Они не смогут добавлять участников и не попадут в распределение.`, ev.currentTarget);
         },
       }, "Заблокировать"),
       h("button", {
@@ -926,7 +928,7 @@ function banControls(u) {
       onclick: (ev) => {
         if (!reason.value.trim()) return toast("Укажите причину", true);
         run("/api/users/ban", { user_ids: [u.id], banned: true, reason: reason.value.trim() },
-          "Заблокировать? Человек не сможет добавлять детей и не попадёт в следующие распределения.", ev.currentTarget);
+          "Заблокировать? Человек не сможет добавлять участников и не попадёт в следующие распределения.", ev.currentTarget);
       },
     }, "Заблокировать"),
   ];
@@ -969,10 +971,10 @@ function renderUser() {
   for (const e of d.exchanges) {
     out.push(h("div", { class: "card clickable", onclick: () => openExchange(e.exchange_id) },
       h("div", { class: "row" }, h("h3", null, e.title), h("span", { class: "spacer" }), h("span", { class: "badge" }, e.status_title)),
-      e.children.length ? h("div", { class: "line" }, h("span", { class: "muted" }, "Дети: "), e.children.map((c) => c.name).join(", ")) : null,
+      e.children.length ? h("div", { class: "line" }, h("span", { class: "muted" }, "Участники: "), e.children.map((c) => c.name).join(", ")) : null,
       e.gave.length ? h("div", { class: "line" }, h("span", { class: "muted" }, "Дарил: "),
         e.gave.map((a) => `${a.child.name} (${GIFT_STATUS[a.status]}${a.ordered_at ? ", отправлен " + fmtDate(a.ordered_at) : ""})`).join("; ")) : null,
-      e.received.length ? h("div", { class: "line" }, h("span", { class: "muted" }, "Его детям: "),
+      e.received.length ? h("div", { class: "line" }, h("span", { class: "muted" }, "Получено: "),
         e.received.map((a) => `${a.child.name} — ${GIFT_STATUS[a.status]}`).join("; ")) : null,
     ));
   }

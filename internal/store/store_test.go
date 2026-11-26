@@ -467,6 +467,47 @@ func TestSoftDeleteChild(t *testing.T) {
 	mustFalse(t, ok, err, "soft delete child with assignment")
 }
 
+func TestSentMessageHistory(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	a, b, silent := mustUser(t, st, 1), mustUser(t, st, 2), mustUser(t, st, 3)
+	for _, m := range []struct {
+		userID int64
+		kind   string
+		text   string
+	}{
+		{a.ID, "org", "первое сообщение"},
+		{b.ID, "org", "чужое сообщение"},
+		{a.ID, "org", "второе сообщение"},
+	} {
+		if err := st.RecordSentMessage(ctx, m.userID, m.kind, m.text); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := st.SentMessagesOfUser(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []store.SentMessage{
+		{ID: got[0].ID, UserID: a.ID, Kind: "org", Text: "второе сообщение", CreatedAt: got[0].CreatedAt},
+		{ID: got[1].ID, UserID: a.ID, Kind: "org", Text: "первое сообщение", CreatedAt: got[1].CreatedAt},
+	}
+	if len(got) != len(want) || got[0].Text != want[0].Text || got[1].Text != want[1].Text ||
+		got[0].ID <= got[1].ID {
+		t.Fatalf("SentMessagesOfUser = %+v, want newest first %+v", got, want)
+	}
+
+	got, err = st.SentMessagesOfUser(ctx, b.ID)
+	if err != nil || len(got) != 1 || got[0].Text != "чужое сообщение" {
+		t.Fatalf("messages of second user = %+v %v", got, err)
+	}
+	if got, _ := st.SentMessagesOfUser(ctx, silent.ID); got != nil {
+		t.Fatalf("user without messages = %+v, want nil", got)
+	}
+}
+
 func openExchange(t *testing.T, st *store.Store) store.Exchange {
 	t.Helper()
 	ctx := context.Background()

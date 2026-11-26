@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"strconv"
 	"strings"
@@ -237,8 +238,12 @@ func (b *Bot) SendMessage(ctx context.Context, userIDs []int64, text string) (in
 	if err != nil {
 		return 0, err
 	}
+	rendered := b.tx("org.message", "text", text)
 	for _, u := range users {
-		b.send(u.TgID, b.tx("org.message", "text", text), nil)
+		b.send(u.TgID, rendered, nil)
+		if err := b.store.RecordSentMessage(ctx, u.ID, "org", rendered); err != nil {
+			slog.Warn("record sent message failed", "user_id", u.ID, "error", err)
+		}
 	}
 	return len(users), nil
 }
@@ -448,14 +453,18 @@ func (b *Bot) Broadcast(ctx context.Context, text string) (int, error) {
 	if text == "" {
 		return 0, refuse("Пустое сообщение.")
 	}
-	ids, err := b.store.AllUserTgIDs(ctx)
+	users, err := b.store.Users(ctx)
 	if err != nil {
 		return 0, err
 	}
-	for _, id := range ids {
-		b.send(id, b.tx("org.broadcast", "text", text), nil)
+	rendered := b.tx("org.broadcast", "text", text)
+	for _, u := range users {
+		b.send(u.TgID, rendered, nil)
+		if err := b.store.RecordSentMessage(ctx, u.ID, "broadcast", rendered); err != nil {
+			slog.Warn("record sent message failed", "user_id", u.ID, "error", err)
+		}
 	}
-	return len(ids), nil
+	return len(users), nil
 }
 
 func (b *Bot) InviteLink(ex store.Exchange) string {

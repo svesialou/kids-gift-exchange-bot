@@ -192,6 +192,10 @@ func (b *Bot) saveChild(ctx context.Context, tgID int64, sess store.Session, wis
 	if ex.Status != domain.ExchangeOpen {
 		return b.showMenu(ctx, tgID, b.tx("children.closed_meanwhile"))
 	}
+	if user.BannedAt != nil {
+		b.send(tgID, b.tx("children.banned"), nil)
+		return b.store.SaveSession(ctx, tgID, store.Session{})
+	}
 	age, _ := strconv.Atoi(sess.Data["age"])
 	err = b.store.AddChild(ctx, ex.ID, store.Child{
 		ParentID:  user.ID,

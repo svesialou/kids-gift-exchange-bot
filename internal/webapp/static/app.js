@@ -961,6 +961,16 @@ function renderUser() {
     banControls(u),
   ), messageCard(u)];
 
+  out.push(h("h4", { class: "section-title" }, "Отправленные сообщения"));
+  if (!d.sent_messages.length) out.push(empty("Сообщений не было"));
+  for (const m of d.sent_messages) {
+    out.push(card(
+      h("div", { class: "row" }, h("span", { class: "muted" }, fmtDate(m.created_at)), h("span", { class: "spacer" }),
+        m.kind === "broadcast" ? h("span", { class: "badge" }, "рассылка") : null),
+      h("div", null, m.text),
+    ));
+  }
+
   if (d.violations.length) {
     out.push(h("h4", { class: "section-title" }, "Нарушения"));
     out.push(...d.violations.map((v) => violationCard(v, true)));

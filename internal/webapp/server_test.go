@@ -300,7 +300,7 @@ func TestFamilyEditing(t *testing.T) {
 	}
 
 	code, body = do("POST", fmt.Sprintf("/api/children/%d/delete", childID), "")
-	if code != http.StatusOK || body["message"] != "Ребёнок удалён." {
+	if code != http.StatusOK || body["message"] != "Участник удалён." {
 		t.Fatalf("child delete: want 200, got %d %v", code, body)
 	}
 	if len(admin.deletedChildIDs) != 1 || admin.deletedChildIDs[0] != childID {
@@ -330,5 +330,62 @@ func TestFamilyEditing(t *testing.T) {
 	}
 	if code, _ := do("POST", fmt.Sprintf("/api/users/%d/edit", anna.ID), `{"first_name":`); code != http.StatusBadRequest {
 		t.Fatalf("malformed body: want 400, got %d", code)
+	}
+}
+
+func TestEditAdultParticipantPersists(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	exID, err := st.CreateExchange(ctx, store.ExchangeSchedule{Title: "Новый год", BudgetMin: 25,
+		OrderDeadline: time.Date(2026, 12, 13, 0, 0, 0, 0, time.UTC), DeliveryDeadline: time.Date(2026, 12, 25, 0, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveUser(ctx, store.User{TgID: 1001, FirstName: "Анна", LastName: "Петрова", Phone: "+375****2233", PVZAddress: "Минск, Победителей 1"}); err != nil {
+		t.Fatal(err)
+	}
+	anna, _ := st.UserByTG(ctx, 1001)
+	if err := st.AddChild(ctx, exID, store.Child{ParentID: anna.ID, FirstName: "Мария", LastName: "Петрова", Age: 6, Gender: "girl"}); err != nil {
+		t.Fatal(err)
+	}
+	children, err := st.ExchangeChildren(ctx, exID)
+	if err != nil || len(children) != 1 {
+		t.Fatalf("children: %d %v", len(children), err)
+	}
+	childID := children[0].ID
+
+	cfg := config.Config{Location: time.UTC, TelegramToken: testToken, AdminIDs: []int64{42}, StuckAfter: 96 * time.Hour}
+	admin := bot.New(nil, st, cfg)
+	srv := httptest.NewServer(New(cfg, st, admin).Handler())
+	defer srv.Close()
+
+	initData := func() string {
+		return signInitData(t, testToken, map[string]string{
+			"auth_date": strconv.FormatInt(time.Now().Unix(), 10),
+			"user":      `{"id":42}`,
+		})
+	}
+	req, _ := http.NewRequest("POST", srv.URL+fmt.Sprintf("/api/children/%d/edit", childID),
+		strings.NewReader(`{"first_name":"Мария","last_name":"Петрова","age":30,"gender":"male","wishes":"книга"}`))
+	req.Header.Set("Authorization", "tma "+initData())
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var body map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&body)
+	if res.StatusCode != http.StatusOK || body["message"] != "Изменения сохранены." {
+		t.Fatalf("adult edit: want 200, got %d %v", res.StatusCode, body)
+	}
+
+	got, err := st.ChildByID(ctx, childID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := store.ChildWithExchange{Child: store.Child{ID: childID, ParentID: anna.ID,
+		FirstName: "Мария", LastName: "Петрова", Age: 30, Gender: "male", Wishes: "книга"}, ExchangeID: exID}
+	if got != want {
+		t.Fatalf("persisted participant mismatch:\n got %+v\nwant %+v", got, want)
 	}
 }

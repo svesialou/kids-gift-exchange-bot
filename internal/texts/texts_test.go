@@ -74,7 +74,7 @@ func TestOverridesValidationAndReset(t *testing.T) {
 		{"common.error", "Ошибка {child}"},
 		{"btn.received", "Забрал\nдва"},
 		{"btn.received", ""},
-		{"btn.give", "👶 Мои дети"},
+		{"btn.give", "👥 Участники"},
 		{"reg.ask_first", "/start"},
 		{"nope", "x"},
 	}

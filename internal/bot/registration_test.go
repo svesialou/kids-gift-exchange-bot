@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -75,5 +76,97 @@ func TestOnStartRegistersOnlyWithExchangeInviteLink(t *testing.T) {
 	sess, err := st.Session(ctx, tgID)
 	if err != nil || sess.State != stateRegFirst {
 		t.Fatalf("registration session must start, got %+v %v", sess, err)
+	}
+}
+
+func completeRegistration(t *testing.T, b *Bot, ctx context.Context, tgID int64) {
+	t.Helper()
+	msg := func(text string) *tgbotapi.Message {
+		return &tgbotapi.Message{From: &tgbotapi.User{ID: tgID}, Text: text}
+	}
+	steps := []string{"Анна", "Иванова", "+375291234567", "Минск, ул. Ленина 1"}
+	for _, s := range steps {
+		if err := b.handleMessage(ctx, msg(s)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestRegistrationAsksIfUserJoinsAsParticipant(t *testing.T) {
+	st := storetest.New(t)
+	ctx := context.Background()
+	api, tg := newFakeTelegram(t)
+	b := New(api, st, config.Config{Location: time.UTC, AdminIDs: []int64{900}})
+	clock := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
+	b.now = func() time.Time { return clock }
+
+	id, err := b.NewExchange(ctx, testSettings("Новый год"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.ChangeExchangeStatus(ctx, id, "open"); err != nil {
+		t.Fatal(err)
+	}
+	ex, err := st.ExchangeByID(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	answer := func(tgID int64, text string) {
+		t.Helper()
+		if err := b.handleMessage(ctx, &tgbotapi.Message{From: &tgbotapi.User{ID: tgID}, Text: text}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const yesID, noID = 200, 201
+	for _, tgID := range []int64{yesID, noID} {
+		if err := b.handleMessage(ctx, startMessage(tgID, ex.InviteCode)); err != nil {
+			t.Fatal(err)
+		}
+		completeRegistration(t, b, ctx, tgID)
+		sess, err := st.Session(ctx, tgID)
+		if err != nil || sess.State != stateRegSelf {
+			t.Fatalf("after registration bot must ask about self participation, got %+v %v", sess, err)
+		}
+		if !strings.Contains(tg.textsTo(fmt.Sprint(tgID)), b.tx("reg.ask_self")) {
+			t.Fatalf("self participation question must be sent: %q", tg.textsTo(fmt.Sprint(tgID)))
+		}
+	}
+
+	user, err := st.UserByTG(ctx, yesID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer(yesID, b.label("btn.self_yes"))
+	sess, err := st.Session(ctx, yesID)
+	if err != nil || sess.State != stateChildAge || sess.Data["first_name"] != "Анна" {
+		t.Fatalf("«Да» must continue as participant with registration name prefilled, got %+v %v", sess, err)
+	}
+	answer(yesID, "30")
+	answer(yesID, b.label("btn.female"))
+	answer(yesID, b.label("btn.skip"))
+	children, err := st.ChildrenOf(ctx, ex.ID, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 1 || children[0].FirstName != "Анна" || children[0].LastName != "Иванова" ||
+		children[0].Age != 30 || children[0].Gender != "female" || children[0].Wishes != "" {
+		t.Fatalf("answering yes must add the user as a participant, got %+v", children)
+	}
+	if sess, err = st.Session(ctx, yesID); err != nil || sess.State != "" {
+		t.Fatalf("participant flow must clear the session, got %+v %v", sess, err)
+	}
+
+	answer(noID, b.label("btn.self_no"))
+	noUser, err := st.UserByTG(ctx, noID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if children, err = st.ChildrenOf(ctx, ex.ID, noUser.ID); err != nil || len(children) != 0 {
+		t.Fatalf("answering no must not add a participant, got %+v %v", children, err)
+	}
+	if sess, err = st.Session(ctx, noID); err != nil || sess.State != "" {
+		t.Fatalf("answering no must clear the session, got %+v %v", sess, err)
 	}
 }

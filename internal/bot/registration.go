@@ -18,6 +18,7 @@ const (
 	stateRegLast  = "reg_last"
 	stateRegPhone = "reg_phone"
 	stateRegPVZ   = "reg_pvz"
+	stateRegSelf  = "reg_self"
 )
 
 func (b *Bot) onStart(ctx context.Context, msg *tgbotapi.Message, payload string) error {
@@ -114,6 +115,27 @@ func (b *Bot) handleRegistrationStep(ctx context.Context, msg *tgbotapi.Message,
 			return nil
 		}
 		return b.finishRegistration(ctx, msg, sess, text)
+
+	case stateRegSelf:
+		switch text {
+		case b.label("btn.self_yes"):
+			// The user becomes a participant: reuse the add-participant flow with the
+			// registration names already filled in.
+			sess.State = stateChildAge
+			b.send(tgID, b.tx("children.ask_age"), b.cancelKeyboard())
+		case b.label("btn.self_no"):
+			if err := b.store.SaveSession(ctx, tgID, store.Session{}); err != nil {
+				return err
+			}
+			user, err := b.store.UserByTG(ctx, tgID)
+			if err != nil {
+				return err
+			}
+			return b.showChildren(ctx, user)
+		default:
+			b.send(tgID, b.tx("reg.ask_self"), b.stepKeyboard(b.label("btn.self_yes"), b.label("btn.self_no")))
+			return nil
+		}
 	}
 	return b.store.SaveSession(ctx, tgID, sess)
 }
@@ -162,11 +184,12 @@ func (b *Bot) finishRegistration(ctx context.Context, msg *tgbotapi.Message, ses
 	}
 
 	b.send(tgID, b.tx("reg.done"), b.mainMenu())
-	saved, err := b.store.UserByTG(ctx, tgID)
-	if err != nil {
+	sess.State = stateRegSelf
+	if err := b.store.SaveSession(ctx, tgID, sess); err != nil {
 		return err
 	}
-	return b.showChildren(ctx, saved)
+	b.send(tgID, b.tx("reg.ask_self"), b.stepKeyboard(b.label("btn.self_yes"), b.label("btn.self_no")))
+	return nil
 }
 
 // notifyGiversAboutAddress warns givers who may already have ordered to the old address.

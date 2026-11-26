@@ -28,10 +28,18 @@ type userExchangeJSON struct {
 	Received   []assignmentJSON `json:"received"`
 }
 
+type sentMessageJSON struct {
+	ID        int64     `json:"id"`
+	Kind      string    `json:"kind"`
+	Text      string    `json:"text"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type userDetailJSON struct {
-	User       userRowJSON        `json:"user"`
-	Exchanges  []userExchangeJSON `json:"exchanges"`
-	Violations []violationJSON    `json:"violations"`
+	User         userRowJSON        `json:"user"`
+	Exchanges    []userExchangeJSON `json:"exchanges"`
+	Violations   []violationJSON    `json:"violations"`
+	SentMessages []sentMessageJSON  `json:"sent_messages"`
 }
 
 func userRow(st store.UserStat) userRowJSON {
@@ -98,6 +106,11 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "user", err)
 		return
 	}
+	messages, err := s.store.SentMessagesOfUser(ctx, id)
+	if err != nil {
+		s.fail(w, "user", err)
+		return
+	}
 
 	byExchange := map[int64]*userExchangeJSON{}
 	entry := func(exchangeID int64) *userExchangeJSON {
@@ -123,7 +136,7 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	out := userDetailJSON{User: userRow(*row), Exchanges: []userExchangeJSON{}, Violations: []violationJSON{}}
+	out := userDetailJSON{User: userRow(*row), Exchanges: []userExchangeJSON{}, Violations: []violationJSON{}, SentMessages: []sentMessageJSON{}}
 	for _, x := range exchanges { // newest first
 		if e, ok := byExchange[x.ID]; ok {
 			settings := s.admin.EffectiveSettings(x.Exchange)
@@ -134,7 +147,14 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 	for _, v := range violations {
 		out.Violations = append(out.Violations, violationToJSON(v))
 	}
+	for _, m := range messages {
+		out.SentMessages = append(out.SentMessages, sentMessageToJSON(m))
+	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+func sentMessageToJSON(m store.SentMessage) sentMessageJSON {
+	return sentMessageJSON{ID: m.ID, Kind: m.Kind, Text: m.Text, CreatedAt: m.CreatedAt}
 }
 
 func (s *Server) handleBan(w http.ResponseWriter, r *http.Request) {

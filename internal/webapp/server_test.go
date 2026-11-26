@@ -108,6 +108,12 @@ func TestPanelAccessAndState(t *testing.T) {
 		t.Fatal(err)
 	}
 	anna, _ := st.UserByTG(ctx, 1001)
+	if err := st.RecordSentMessage(ctx, anna.ID, "org", "первое сообщение"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RecordSentMessage(ctx, anna.ID, "broadcast", "второе сообщение"); err != nil {
+		t.Fatal(err)
+	}
 	if err := st.AddChild(ctx, ex.ID, store.Child{ParentID: anna.ID, FirstName: "Маша", LastName: "Петрова", Age: 6, Gender: "girl"}); err != nil {
 		t.Fatal(err)
 	}
@@ -208,6 +214,17 @@ func TestPanelAccessAndState(t *testing.T) {
 	code, detail := do("GET", fmt.Sprintf("/api/users/%d", anna.ID), initData(42), "")
 	if code != http.StatusOK || len(detail["violations"].([]any)) != 1 || len(detail["exchanges"].([]any)) != 1 {
 		t.Fatalf("user detail: %d %v", code, detail)
+	}
+	msgs := detail["sent_messages"].([]any)
+	if len(msgs) != 2 {
+		t.Fatalf("want 2 sent messages, got %v", msgs)
+	}
+	first, second := msgs[0].(map[string]any), msgs[1].(map[string]any)
+	if first["text"] != "второе сообщение" || first["kind"] != "broadcast" || second["text"] != "первое сообщение" || second["kind"] != "org" {
+		t.Fatalf("sent messages must be newest first with kinds: %v", msgs)
+	}
+	if _, ok := first["created_at"]; !ok {
+		t.Fatalf("sent message must carry created_at: %v", msgs)
 	}
 
 	code, body = do("POST", "/api/texts/give.thanks", initData(42), `{"value":"Спасибо, {parent}!"}`)
